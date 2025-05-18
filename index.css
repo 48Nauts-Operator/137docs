@@ -1,0 +1,352 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 250, 250, 250;
+  --background-end-rgb: 255, 255, 255;
+}
+
+.dark {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 15, 23, 42;
+  --background-end-rgb: 30, 41, 59;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+  font-family: 'Inter', sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgb(var(--background-start-rgb));
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #475569;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Animation classes */
+.fade-in {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.slide-up {
+  animation: slideUp 0.3s ease-in-out;
+}
+
+.slide-down {
+  animation: slideDown 0.3s ease-in-out;
+}
+
+/* Card styles */
+.card {
+  @apply bg-white dark:bg-secondary-800 rounded-lg shadow-card p-4 transition-all duration-200;
+}
+
+/* Button styles */
+.btn {
+  @apply px-4 py-2 rounded-md font-medium transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2;
+}
+
+.btn-primary {
+  @apply bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500;
+}
+
+.btn-secondary {
+  @apply bg-secondary-200 text-secondary-800 hover:bg-secondary-300 focus:ring-secondary-300 dark:bg-secondary-700 dark:text-secondary-100 dark:hover:bg-secondary-600;
+}
+
+.btn-success {
+  @apply bg-success-600 text-white hover:bg-success-700 focus:ring-success-500;
+}
+
+.btn-danger {
+  @apply bg-danger-600 text-white hover:bg-danger-700 focus:ring-danger-500;
+}
+
+.btn-warning {
+  @apply bg-warning-500 text-white hover:bg-warning-600 focus:ring-warning-400;
+}
+
+.btn-outline {
+  @apply border border-secondary-300 dark:border-secondary-600 bg-transparent hover:bg-secondary-100 dark:hover:bg-secondary-700 focus:ring-secondary-300;
+}
+
+/* Form controls */
+.form-input {
+  @apply w-full px-3 py-2 border border-secondary-300 dark:border-secondary-600 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:text-white;
+}
+
+.form-label {
+  @apply block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1;
+}
+
+.form-error {
+  @apply text-sm text-danger-600 dark:text-danger-400 mt-1;
+}
+
+/* Badge styles */
+.badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+
+.badge-primary {
+  @apply bg-primary-100 text-primary-800 dark:bg-primary-900 dark:text-primary-300;
+}
+
+.badge-secondary {
+  @apply bg-secondary-100 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-300;
+}
+
+.badge-success {
+  @apply bg-success-100 text-success-800 dark:bg-success-900 dark:text-success-300;
+}
+
+.badge-warning {
+  @apply bg-warning-100 text-warning-800 dark:bg-warning-900 dark:text-warning-300;
+}
+
+.badge-danger {
+  @apply bg-danger-100 text-danger-800 dark:bg-danger-900 dark:text-danger-300;
+}
+
+/* Table styles */
+.table-container {
+  @apply w-full overflow-x-auto;
+}
+
+.table {
+  @apply min-w-full divide-y divide-secondary-200 dark:divide-secondary-700;
+}
+
+.table thead {
+  @apply bg-secondary-50 dark:bg-secondary-800;
+}
+
+.table th {
+  @apply px-6 py-3 text-left text-xs font-medium text-secondary-500 dark:text-secondary-400 uppercase tracking-wider;
+}
+
+.table tbody {
+  @apply bg-white dark:bg-secondary-900 divide-y divide-secondary-200 dark:divide-secondary-800;
+}
+
+.table td {
+  @apply px-6 py-4 whitespace-nowrap text-sm text-secondary-900 dark:text-secondary-100;
+}
+
+/* Sidebar styles */
+.sidebar {
+  @apply fixed top-0 left-0 h-full w-64 bg-white dark:bg-secondary-900 shadow-lg z-10 transition-transform duration-300 ease-in-out;
+}
+
+.sidebar-collapsed {
+  @apply -translate-x-full md:translate-x-0 md:w-20;
+}
+
+/* Navbar styles */
+.navbar {
+  @apply fixed top-0 right-0 left-0 md:left-64 bg-white dark:bg-secondary-900 shadow-sm z-10 transition-all duration-300;
+}
+
+.navbar-collapsed {
+  @apply left-0 md:left-20;
+}
+
+/* Main content styles */
+.main-content {
+  @apply pt-16 md:pl-64 min-h-screen transition-all duration-300;
+}
+
+.main-content-collapsed {
+  @apply md:pl-20;
+}
+
+/* Document card styles */
+.document-card {
+  @apply card hover:shadow-lg cursor-pointer;
+}
+
+.document-card-selected {
+  @apply ring-2 ring-primary-500;
+}
+
+/* Status indicators */
+.status-paid {
+  @apply badge badge-success;
+}
+
+.status-unpaid {
+  @apply badge badge-secondary;
+}
+
+.status-overdue {
+  @apply badge badge-danger;
+}
+
+.status-pending {
+  @apply badge badge-warning;
+}
+
+/* Timeline styles */
+.timeline {
+  @apply relative pl-8 border-l border-secondary-200 dark:border-secondary-700;
+}
+
+.timeline-item {
+  @apply relative mb-8;
+}
+
+.timeline-dot {
+  @apply absolute -left-[25px] w-5 h-5 rounded-full bg-primary-500;
+}
+
+.timeline-content {
+  @apply card;
+}
+
+/* Notification styles */
+.notification-badge {
+  @apply absolute -top-1 -right-1 w-5 h-5 bg-danger-500 text-white text-xs flex items-center justify-center rounded-full;
+}
+
+.notification-item {
+  @apply p-4 border-b border-secondary-200 dark:border-secondary-700 hover:bg-secondary-50 dark:hover:bg-secondary-800 cursor-pointer;
+}
+
+.notification-unread {
+  @apply bg-primary-50 dark:bg-primary-900/20;
+}
+
+/* Analytics card styles */
+.analytics-card {
+  @apply card h-full;
+}
+
+.analytics-value {
+  @apply text-3xl font-bold text-primary-600 dark:text-primary-400;
+}
+
+.analytics-label {
+  @apply text-sm text-secondary-500 dark:text-secondary-400;
+}
+
+/* Search styles */
+.search-input {
+  @apply form-input pl-10;
+}
+
+.search-icon {
+  @apply absolute left-3 top-1/2 -translate-y-1/2 text-secondary-400;
+}
+
+/* Document preview styles */
+.document-preview {
+  @apply bg-white dark:bg-secondary-800 rounded-lg shadow-lg overflow-hidden;
+}
+
+.document-preview-header {
+  @apply p-4 border-b border-secondary-200 dark:border-secondary-700 flex justify-between items-center;
+}
+
+.document-preview-content {
+  @apply p-4;
+}
+
+/* Tag styles */
+.tag {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium mr-2 mb-2;
+}
+
+/* Dropdown styles */
+.dropdown {
+  @apply absolute right-0 mt-2 w-48 rounded-md shadow-dropdown bg-white dark:bg-secondary-800 ring-1 ring-black ring-opacity-5 divide-y divide-secondary-100 dark:divide-secondary-700 focus:outline-none z-20;
+}
+
+.dropdown-item {
+  @apply block px-4 py-2 text-sm text-secondary-700 dark:text-secondary-200 hover:bg-secondary-100 dark:hover:bg-secondary-700;
+}
+
+/* Modal styles */
+.modal-backdrop {
+  @apply fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50;
+}
+
+.modal {
+  @apply bg-white dark:bg-secondary-800 rounded-lg shadow-modal max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto;
+}
+
+.modal-header {
+  @apply p-4 border-b border-secondary-200 dark:border-secondary-700;
+}
+
+.modal-body {
+  @apply p-4;
+}
+
+.modal-footer {
+  @apply p-4 border-t border-secondary-200 dark:border-secondary-700 flex justify-end space-x-2;
+}
+
+/* Tooltip styles */
+.tooltip {
+  @apply absolute z-10 px-2 py-1 text-xs font-medium text-white bg-secondary-900 rounded shadow-sm;
+}
+
+/* Loading spinner */
+.spinner {
+  @apply animate-spin h-5 w-5 text-primary-500;
+}
+
+/* Empty state */
+.empty-state {
+  @apply flex flex-col items-center justify-center p-8 text-center;
+}
+
+.empty-state-icon {
+  @apply text-secondary-400 mb-4 h-12 w-12;
+}
+
+.empty-state-text {
+  @apply text-secondary-500 dark:text-secondary-400 mb-4;
+}
+
+/* Responsive adjustments */
+@media (max-width: 640px) {
+  .card {
+    @apply p-3;
+  }
+  
+  .table th, .table td {
+    @apply px-3 py-2;
+  }
+}

@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+# CRA build output
+src/frontend/build/
+# Vite, Next, Gatsby cache
+.vite/
+.next/
+.cache/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+
+# IDEs & editors
+.idea/
+.vscode/
+*.sw?
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+
+# Databases and user data
+*.sqlite
+*.db
+data/
+
+# Python virtual envs
+venv/
+.env/
+
+# Coverage
+htmlcov/
+coverage*
+
+# Misc
+*.bak 

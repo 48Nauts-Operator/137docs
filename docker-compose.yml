@@ -1,0 +1,37 @@
+services:
+  frontend:
+    build:
+      context: ./src/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3303:3000"
+    volumes:
+      - ./src/frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8808/api
+
+  backend:
+    build:
+      context: ./src/backend
+      dockerfile: Dockerfile
+    ports:
+      - "8808:8000"
+    volumes:
+      - ./src/backend:/app
+      # Bind local directories by default; override via env vars if desired
+      - ${WATCH_FOLDER:-./data/inbox}:/inbox
+      - ${ARCHIVE_FOLDER:-./data/archive}:/archive
+    environment:
+      - WATCH_FOLDER=/inbox
+      - ARCHIVE_FOLDER=/archive
+      - DATABASE_URL=sqlite:///./documents.db
+      # Point to local Ollama (default) – override via `export OLLAMA_BASE_URL=...`
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-r1:1.5b}
+      - LLM_API_URL=${LLM_API_URL:-http://host.docker.internal:11434/api/generate}
+
+# No dependency on an internal 'llm' container – backend will talk to the
+# host-running Ollama instance instead.

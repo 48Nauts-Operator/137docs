@@ -54,32 +54,97 @@ See `docs/137docs_architecture.md` for a deep dive.
 
 ### Prerequisites
 
-* Python ≥ 3.11  (see `requirements.txt`)
-* Node ≥ 18      (see `src/frontend/package.json`)
-* An [Ollama](https://github.com/jmorganca/ollama) instance for local LLM inference (or point `LLM_API_URL` to OpenAI etc.)
+* **Docker Desktop** – Required for running the full stack
+* **Git** – For version control and repository management
+* Optional: **VS Code** with Docker extension for easier container management
 
-### Backend
+### Development Setup
+
+1. **Clone and start the development environment**:
+   ```bash
+   git clone https://github.com/48Nauts-Operator/137docs.git
+   cd 137docs
+   docker-compose up --build
+   ```
+
+2. **Access the applications**:
+   * **Frontend**: http://localhost:3303 (React + Vite dev server with hot reload)
+   * **Backend**: http://localhost:8808 (FastAPI with auto-reload)
+   * **Database**: PostgreSQL running internally (accessible via backend)
+   * **Qdrant**: http://localhost:6333 (Vector database for embeddings)
+
+3. **Development workflow**:
+   ```bash
+   # View logs for all services
+   docker-compose logs -f
+   
+   # View logs for specific service
+   docker-compose logs -f backend
+   docker-compose logs -f frontend
+   
+   # Restart a specific service
+   docker-compose restart backend
+   
+   # Rebuild after code changes
+   docker-compose up --build
+   
+   # Stop all services
+   docker-compose down
+   ```
+
+### Environment Configuration
+
+Environment variables are configured in `docker-compose.yml` and `.env`:
+
+**Backend Configuration**:
+* `DATABASE_URL` – PostgreSQL connection (auto-configured)
+* `QDRANT_HOST` – Vector database connection
+* `OLLAMA_HOST` – LLM service endpoint (default: host.docker.internal:11434)
+* `LLM_MODEL` – Default model name (default: llama3)
+* `HOSTFS_MOUNT` – Host filesystem mount point for document storage
+
+**Frontend Configuration**:
+* Automatically proxies `/api` calls to the backend
+* Hot reload enabled for development
+* Built with Vite for fast development experience
+
+### Database Management
 
 ```bash
-cd src/backend
-uvicorn app.main:app --reload --port 8000
+# Access database migrations
+docker-compose exec backend alembic upgrade head
+
+# Create new migration
+docker-compose exec backend alembic revision --autogenerate -m "description"
+
+# View migration history
+docker-compose exec backend alembic history
+
+# Access PostgreSQL directly
+docker-compose exec postgres psql -U postgres -d docai
 ```
 
-Environment variables (defaults set in `docker-compose.yml`):
-* `WATCH_FOLDER` – directory watched for new files (default `./data/inbox`)
-* `ARCHIVE_FOLDER` – where processed files are moved
-* `DATABASE_URL` – SQLAlchemy URL, e.g. `sqlite:///./documents.db`
-* `LLM_MODEL`, `LLM_API_URL` – LLM config used by `app.llm`
+### File System Access
 
-### Frontend
+The application uses Docker volume mounts for persistent storage:
+* `./data/inbox` → Container inbox for document processing
+* `./data/storage` → Document archive and storage
+* `./backups` → Database backups
 
-```bash
-cd src/frontend
-npm install      # first run only
-npm start        # CRA dev-server on :3000
-```
+### External Dependencies
 
-The proxy is pre-configured to forward `/api` calls to the backend.
+**Optional External Services**:
+* **Ollama** – For local LLM inference (install separately or use cloud APIs)
+  ```bash
+  # Install Ollama (macOS/Linux)
+  curl -fsSL https://ollama.ai/install.sh | sh
+  
+  # Pull recommended models
+  ollama pull llama3
+  ollama pull phi3
+  ```
+
+> ℹ️ **Note**: All core functionality runs in Docker containers. External services like Ollama are optional and can be replaced with cloud API endpoints.
 
 ---
 

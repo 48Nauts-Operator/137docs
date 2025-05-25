@@ -8,6 +8,7 @@ from app.models import Document
 from app.llm import LLMProcessor
 import re
 import json
+from sqlalchemy.sql import text
 
 # Configure logging
 logging.basicConfig(
@@ -62,92 +63,29 @@ class SearchService:
         return results
     
     async def semantic_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Perform a semantic search using LLM to find relevant documents.
-        
-        Args:
-            query: Natural language search query
-            limit: Maximum number of results to return
-            
-        Returns:
-            List of matching documents with relevance scores
-        """
-        # First, get a larger set of potential matches using basic search
-        potential_matches = self.db.query(Document).limit(50).all()
-        
-        if not potential_matches:
-            return []
-        
-        # Prepare prompt for LLM to evaluate document relevance
-        documents_data = []
-        for i, doc in enumerate(potential_matches):
-            # Truncate content to avoid token limits
-            content_preview = doc.content_text[:500] + "..." if doc.content_text and len(doc.content_text) > 500 else doc.content_text
-            
-            doc_data = {
+        """Vector-based semantic search using pgvector.<- returns docs ordered by cosine distance."""
+
+        from app.embeddings import get_embedding
+        embed = await get_embedding(query)
+
+        # Use pgvector operator <-> for cosine distance
+        sql = (
+            "SELECT * , embedding <-> :emb AS distance "
+            "FROM documents WHERE embedding IS NOT NULL ORDER BY embedding <-> :emb LIMIT :lim"
+        )
+        rows = self.db.execute(text(sql), {"emb": embed, "lim": limit})
+        results = []
+        for row in rows:
+            doc = row[0] if isinstance(row, tuple) else row  # depending on execution style
+            results.append({
                 "id": doc.id,
                 "title": doc.title,
                 "sender": doc.sender,
-                "content_preview": content_preview,
-                "document_type": doc.document_type
-            }
-            documents_data.append(doc_data)
-        
-        # Create prompt for LLM
-        prompt = f"""
-        You are an AI assistant helping with document search. Given the following search query and document list, 
-        evaluate the relevance of each document to the query on a scale of 0-10, where 10 is highly relevant.
-        
-        Search query: "{query}"
-        
-        Documents:
-        {json.dumps(documents_data, indent=2)}
-        
-        Return a JSON array of objects with document IDs and relevance scores, sorted by relevance (highest first).
-        Each object should have "id" and "score" fields. Only include documents with a score of 3 or higher.
-        
-        Example response format:
-        [
-          {{"id": 5, "score": 9}},
-          {{"id": 2, "score": 7}},
-          {{"id": 10, "score": 4}}
-        ]
-        """
-        
-        # Get LLM response
-        llm_response = await self.llm_processor._query_llm(prompt)
-        
-        try:
-            # Parse LLM response to get document relevance scores
-            relevance_scores = json.loads(llm_response)
-            
-            # Get document IDs sorted by relevance
-            document_ids = [item["id"] for item in relevance_scores]
-            
-            # Get documents by ID
-            results = []
-            for score_item in relevance_scores[:limit]:
-                doc_id = score_item["id"]
-                score = score_item["score"]
-                
-                # Find document in potential matches
-                for doc in potential_matches:
-                    if doc.id == doc_id:
-                        results.append({
-                            "id": doc.id,
-                            "title": doc.title,
-                            "sender": doc.sender,
-                            "document_date": doc.document_date.isoformat() if doc.document_date else None,
-                            "document_type": doc.document_type,
-                            "status": doc.status,
-                            "relevance_score": score
-                        })
-                        break
-            
-            return results
-        except json.JSONDecodeError:
-            logger.error("Failed to parse LLM response as JSON")
-            # Fall back to basic search
-            return await self.basic_search(query, limit)
+                "document_type": doc.document_type,
+                "status": doc.status,
+                "relevance_score": 1 - row['distance'] if isinstance(row, dict) else None
+            })
+        return results
     
     async def extract_search_intent(self, query: str) -> Dict[str, Any]:
         """Extract search intent from a natural language query using LLM.
@@ -368,3 +306,60 @@ class SearchService:
         except json.JSONDecodeError:
             logger.error("Failed to parse LLM response as JSON")
             return []
+
+    # ------------------------------------------------------------------
+    #  Vision search (ColPali + Qdrant) ---------------------------------
+    # ------------------------------------------------------------------
+
+    async def vision_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search ColPali multi-vector index using late-interaction approximation.
+
+        We encode the textual *query* with ColPali's text encoder → 128-d vector
+        and perform ANN search in Qdrant over patch vectors.  Returned patch
+        scores are aggregated to document-level by taking the *max* score per
+        doc_id.
+        """
+
+        from app.colpali_embedder import ColPaliEmbedder
+        from app.vector_store import search as qdrant_search
+
+        embedder = ColPaliEmbedder()
+        q_vec = embedder.embed_text(query)
+
+        points = qdrant_search(q_vec, top_k=50)  # fetch more to allow aggregation
+
+        # Aggregate by document id --------------------------------------
+        doc_best: dict[int, float] = {}
+        for p in points:
+            doc_id = p.payload.get("doc_id") if p.payload else None
+            if doc_id is None:
+                continue
+            score = p.score or 0.0
+            if doc_id not in doc_best or score > doc_best[doc_id]:
+                doc_best[doc_id] = score
+
+        # Sort and trim --------------------------------------------------
+        ranked = sorted(doc_best.items(), key=lambda x: x[1], reverse=True)[:limit]
+
+        # Retrieve documents --------------------------------------------
+        results: list[dict[str, any]] = []
+        if not ranked:
+            return results
+
+        doc_ids = [d for d, _ in ranked]
+        rows = self.db.query(Document).filter(Document.id.in_(doc_ids)).all()
+        doc_map = {d.id: d for d in rows}
+
+        for doc_id, score in ranked:
+            d = doc_map.get(doc_id)
+            if d:
+                results.append({
+                    "id": d.id,
+                    "title": d.title,
+                    "sender": d.sender,
+                    "document_type": d.document_type,
+                    "status": d.status,
+                    "vision_score": score,
+                })
+
+        return results

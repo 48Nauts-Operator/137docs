@@ -3,8 +3,10 @@ Database models for the Document Management System.
 """
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table, Boolean, Text
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import ARRAY
 from datetime import datetime
 from app.database import Base
+from pgvector.sqlalchemy import Vector
 
 # Association table for document-tag relationship
 document_tag = Table(
@@ -52,13 +54,23 @@ class Document(Base):
     confidence_score = Column(Float, nullable=True)
     currency = Column(String(10), nullable=True)
     status = Column(String(50), default="pending")
+    embedding = Column(Vector(1536), nullable=True)
     # SHA-256 hash of the original file, used for deduplication
     hash = Column(String(64), nullable=False, unique=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Multi-company FK (nullable for legacy docs)
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
+    entity = relationship("Entity")
     
     # Relationships
-    tags = relationship("Tag", secondary=document_tag, back_populates="documents")
+    tags = relationship(
+        "Tag",
+        secondary=document_tag,
+        back_populates="documents",
+        lazy="selectin",          # eager-load to avoid async lazy IO
+        overlaps="document_tag_assoc,documents,tags,document,tag",  # silence SAWarnings
+    )
     notifications = relationship("Notification", back_populates="document", cascade="all, delete-orphan")
 
 class Tag(Base):
@@ -71,7 +83,13 @@ class Tag(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
-    documents = relationship("Document", secondary=document_tag, back_populates="tags")
+    documents = relationship(
+        "Document",
+        secondary=document_tag,
+        back_populates="tags",
+        lazy="selectin",
+        overlaps="document_tag_assoc,documents,tags,document,tag",
+    )
 
 class User(Base):
     """User model for authentication."""
@@ -81,8 +99,10 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, nullable=False)
     email = Column(String(100), unique=True, nullable=False)
+    full_name = Column(String(100), nullable=True)
+    role = Column(String(20), nullable=False, default="viewer")  # admin | viewer | ...
     hashed_password = Column(String(255), nullable=False)
-    is_active = Column(Boolean, default=True)
+    disabled = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     
 class Notification(Base):
@@ -115,8 +135,18 @@ class AddressEntry(Base):
     entity_type = Column(String(20), default="company")  # company | person | government
     email = Column(String(255), nullable=True)
     phone = Column(String(50), nullable=True)
+    street = Column(String(255), nullable=True)
+    address2 = Column(String(255), nullable=True)
+    town = Column(String(255), nullable=True)
+    zip = Column(String(20), nullable=True)
+    county = Column(String(100), nullable=True)
+    # ISO alpha-2 code is usually 2 letters but we increasingly store full "Switzerland", "United Kingdom" etc.
+    # Therefore widen column to 100 characters to avoid truncation errors.
+    country = Column(String(100), nullable=True)
+    group_name = Column(String(100), nullable=True)
+    last_transaction = Column(String(50), nullable=True)
+    # Legacy single-address field kept for backward compatibility
     address = Column(Text, nullable=True)
-    country = Column(String(2), nullable=True)
     vat_id = Column(String(50), nullable=True)
     bank_details = Column(Text, nullable=True)  # encrypted or masked if needed
     tags = Column(String(255), nullable=True)  # comma-separated for MVP
@@ -124,3 +154,86 @@ class AddressEntry(Base):
     last_seen_in = Column(String(50), nullable=True)  # ISO date
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+# ---------------------------------------------------------------------------
+#  Vision embeddings (ColPali) mapping table
+# ---------------------------------------------------------------------------
+
+class VectorEntry(Base):
+    """Mapping between internal document pages and Qdrant point IDs.
+
+    Each row stores the list of patch-level vector IDs (UUID strings) that were
+    inserted for the given page.  We serialise the list as JSON inside a TEXT
+    column to keep the schema simple across SQLite & Postgres.
+    """
+
+    __tablename__ = "vectors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doc_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
+    page = Column(Integer, nullable=False)
+    vector_ids = Column(Text, nullable=False)  # JSON list e.g. '["uuid1", "uuid2", ...]'
+
+    document = relationship("Document")
+
+# ---------------------------------------------------------------------------
+#  Application-wide settings (single-row table)
+# ---------------------------------------------------------------------------
+
+# We store runtime-changeable paths (Inbox, Storage root) here instead of
+# relying purely on environment variables so that the UI can update them at
+# runtime and multiple containers / processes see a consistent value.
+
+
+class AppSettings(Base):
+    """Singleton table holding mutable configuration like folder paths."""
+
+    __tablename__ = "settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Absolute path that the watcher observes for new uploads
+    inbox_path = Column(String(255), nullable=False)
+
+    # Root directory where the system organises its year / Archive sub-folders
+    storage_root = Column(String(255), nullable=False)
+
+    # Once the user confirmed the initial choice we protect accidental changes
+    locked = Column(Boolean, default=False)
+
+    tos_accepted_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+# ---------------------------------------------------------------------------
+#  Entity / multi-tenant models
+# ---------------------------------------------------------------------------
+
+
+class Entity(Base):
+    """Company or personal profile representing a billing/ownership context."""
+
+    __tablename__ = "entities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    type = Column(String(20), default="company")  # company | individual
+    address_json = Column(Text, nullable=True)  # JSON string for MVP
+    vat_id = Column(String(50), nullable=True)
+    iban = Column(String(50), nullable=True)
+    aliases = Column(ARRAY(String), nullable=True)  # list of known names
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserEntity(Base):
+    """Link table between users and entities (future multi-user support)."""
+
+    __tablename__ = "user_entities"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    entity_id = Column(Integer, ForeignKey("entities.id"), primary_key=True)
+    role = Column(String(20), default="owner")  # owner | member
+
+    entity = relationship("Entity")
+    user = relationship("User")

@@ -312,14 +312,14 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
 
             {/* Title */}
             <div className="space-y-1">
-              <div className="text-xs text-secondary-500 dark:text-secondary-400">Title</div>
+              <div className="text-xs text-secondary-500 dark:text-secondary-400">Invoice Number</div>
               {isEditing ? (
                 <input
                   type="text"
                   name="title"
                   value={formData.title}
                   onChange={handleChange}
-                  className="form-input w-full"
+                  className="form-input w-full text-gray-900 dark:text-gray-400"
                 />
               ) : (
                 <div>{document.title}</div>
@@ -337,7 +337,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                   name="documentType"
                   value={formData.documentType}
                   onChange={handleChange}
-                  className="form-select w-full"
+                  className="form-select w-full text-gray-900 dark:text-gray-400"
                 >
                   <option value="">Select type</option>
                   <option value="invoice">Invoice</option>
@@ -356,7 +356,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                   name="documentDate"
                   value={formData.documentDate}
                   onChange={handleChange}
-                  className="form-input w-full"
+                  className="form-input w-full text-gray-900 dark:text-gray-400"
                 />
               </div>
 
@@ -368,7 +368,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                   name="dueDate"
                   value={formData.dueDate}
                   onChange={handleChange}
-                  className="form-input w-full"
+                  className="form-input w-full text-gray-900 dark:text-gray-400"
                 />
               </div>
 
@@ -381,7 +381,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                   step="0.01"
                   value={formData.amount}
                   onChange={handleChange}
-                  className="form-input w-full"
+                  className="form-input w-full text-gray-900 dark:text-gray-400"
                 />
               </div>
 
@@ -392,7 +392,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                   name="currency"
                   value={formData.currency}
                   onChange={handleChange}
-                  className="form-select w-full"
+                  className="form-select w-full text-gray-900 dark:text-gray-400"
                 >
                   <option value="">Select</option>
                   <option value="USD">USD</option>
@@ -410,7 +410,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                 name="status"
                 value={formData.status}
                 onChange={handleChange}
-                className="form-select w-full"
+                className="form-select w-full text-gray-900 dark:text-gray-400"
               >
                 <option value="pending">Pending</option>
                 <option value="paid">Paid</option>
@@ -427,7 +427,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                 name="sender"
                 value={formData.sender}
                 onChange={handleChange}
-                className="form-input w-full"
+                className="form-input w-full text-gray-900 dark:text-gray-400"
               />
             </div>
 
@@ -439,7 +439,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                 name="recipient"
                 value={formData.recipient}
                 onChange={handleChange}
-                className="form-input w-full"
+                className="form-input w-full text-gray-900 dark:text-gray-400"
               />
             </div>
             </>

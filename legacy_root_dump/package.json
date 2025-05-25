@@ -7,7 +7,6 @@
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
     "@types/jest": "^27.5.2",
-    "@types/node": "^16.18.39",
     "@types/react": "^18.2.15",
     "@types/react-dom": "^18.2.7",
     "axios": "^1.4.0",
@@ -21,8 +20,8 @@
     "react-dropzone": "^14.2.3",
     "react-pdf": "^7.1.2",
     "react-query": "^3.39.3",
+    "react-refresh": "^0.17.0",
     "react-router-dom": "^6.14.2",
-    "react-scripts": "5.0.1",
     "recharts": "^2.7.2",
     "tailwind-merge": "^1.14.0",
     "tailwindcss-animate": "^1.0.6",
@@ -30,10 +29,10 @@
     "web-vitals": "^2.1.4"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "dev": "npm --prefix src/frontend run dev",
+    "build": "npm --prefix src/frontend run build",
+    "preview": "npm --prefix src/frontend run preview",
+    "test": "npm --prefix src/frontend run test"
   },
   "eslintConfig": {
     "extends": [
@@ -54,8 +53,11 @@
     ]
   },
   "devDependencies": {
+    "@types/node": "^22.15.19",
+    "@vitejs/plugin-react": "^4.4.1",
     "autoprefixer": "^10.4.14",
     "postcss": "^8.4.27",
-    "tailwindcss": "^3.3.3"
+    "tailwindcss": "^3.3.3",
+    "vite": "^6.3.5"
   }
 }

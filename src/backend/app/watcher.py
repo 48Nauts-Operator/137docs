@@ -5,7 +5,7 @@ import os
 import asyncio
 import logging
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedEvent, FileModifiedEvent
 from typing import Callable, Awaitable
 
 logger = logging.getLogger(__name__)
@@ -18,21 +18,32 @@ class DocumentEventHandler(FileSystemEventHandler):
         self.callback = callback
         self.loop = asyncio.get_event_loop()
     
-    def on_created(self, event):
-        """Handle file creation events."""
-        if not event.is_directory:
-            file_path = event.src_path
-            # Check if file is a document (PDF, DOCX, etc.)
-            if self._is_document(file_path):
-                logger.info(f"New document detected: {file_path}")
-                # Schedule callback in event loop
-                asyncio.run_coroutine_threadsafe(self.callback(file_path), self.loop)
+    def _handle_event(self, path: str):
+        """Shared helper – schedule callback if *path* is a supported doc."""
+        if self._is_document(path):
+            logger.info(f"New/updated document detected: {path}")
+            asyncio.run_coroutine_threadsafe(self.callback(path), self.loop)
     
     def _is_document(self, file_path: str) -> bool:
         """Check if file is a supported document type."""
         supported_extensions = ['.pdf', '.docx', '.doc', '.jpg', '.jpeg', '.png', '.tiff', '.tif']
         _, ext = os.path.splitext(file_path)
         return ext.lower() in supported_extensions
+
+    # Watchdog event hooks --------------------------------------------------
+
+    def on_created(self, event: FileCreatedEvent):
+        if not event.is_directory:
+            self._handle_event(event.src_path)
+
+    def on_moved(self, event: FileMovedEvent):
+        if not event.is_directory:
+            self._handle_event(event.dest_path)
+
+    def on_modified(self, event: FileModifiedEvent):
+        if not event.is_directory:
+            # Some editors write directly (no rename) – treat as potential new
+            self._handle_event(event.src_path)
 
 class FolderWatcher:
     """Watches a folder for new documents."""

@@ -2,12 +2,22 @@
 Configuration management for the Document Management System.
 """
 import os
-from pydantic import BaseSettings
+# ---------------------------------------------------------------------------
+# Pydantic v1 / v2 compatibility layer
+# ---------------------------------------------------------------------------
+
+try:
+    # Pydantic < 2.0
+    from pydantic import BaseSettings  # type: ignore
+except (ImportError, AttributeError):  # pragma: no cover – v2.x only
+    # From Pydantic 2.0 onwards BaseSettings moved to separate package
+    from pydantic_settings import BaseSettings  # type: ignore
 
 class Settings(BaseSettings):
     """Application settings."""
     
     # Database settings
+    DATABASE_URL: str | None = os.getenv("DATABASE_URL")
     DATABASE_PATH: str = os.path.join(os.getcwd(), "documents.db")
     
     # Folder monitoring settings
@@ -27,6 +37,12 @@ class Settings(BaseSettings):
     NOTIFICATION_ENABLED: bool = True
     AUTO_OCR: bool = True
     AUTO_TAGGING: bool = True
+    
+    # Application defaults
+    DEFAULT_CURRENCY: str = os.getenv("DEFAULT_CURRENCY", "USD")
+    
+    # Host filesystem mount root inside the container – used by the file-browser API
+    HOSTFS_ROOT: str = os.getenv("HOSTFS_ROOT", "/hostfs")
     
     class Config:
         env_file = ".env"

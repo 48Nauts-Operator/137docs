@@ -1,3 +1,29 @@
-@import 'tailwindcss/base';
-@import 'tailwindcss/components';
-@import 'tailwindcss/utilities'; 
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------------
+   Override form control text colour in dark mode so it's not pure white
+   which is hard to read on very dark backgrounds.  We use Tailwind's
+   `@layer` to keep specificity low and enable further utility overrides.
+------------------------------------------------------------------------ */
+
+@layer components {
+  input,
+  select,
+  textarea {
+    @apply dark:text-gray-400;
+  }
+}
+
+@keyframes shake {
+  0% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  50% { transform: translateX(6px); }
+  75% { transform: translateX(-4px); }
+  100% { transform: translateX(0); }
+}
+
+.animate-shake {
+  animation: shake 0.4s ease-in-out;
+} 

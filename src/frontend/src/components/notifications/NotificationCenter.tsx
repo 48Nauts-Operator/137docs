@@ -1,64 +1,32 @@
 import React, { useState } from 'react';
 import { Bell, Check, Trash2, Clock, FileText, AlertTriangle } from 'lucide-react';
-
-// Mock notification data
-const mockNotifications = [
-  {
-    id: 1,
-    title: 'Invoice #2023-004 is overdue',
-    message: 'Internet Service Invoice from FastNet Provider is 3 days overdue.',
-    type: 'overdue',
-    documentId: 4,
-    isRead: false,
-    createdAt: '2023-06-08T10:30:00Z'
-  },
-  {
-    id: 2,
-    title: 'Electricity Bill due soon',
-    message: 'Electricity Bill from Power Company is due in 2 days.',
-    type: 'reminder',
-    documentId: 2,
-    isRead: false,
-    createdAt: '2023-06-08T09:15:00Z'
-  },
-  {
-    id: 3,
-    title: 'Invoice #2023-001 marked as paid',
-    message: 'Invoice from Acme Corporation has been marked as paid.',
-    type: 'system',
-    documentId: 1,
-    isRead: true,
-    createdAt: '2023-05-22T14:45:00Z'
-  },
-  {
-    id: 4,
-    title: 'New document processed',
-    message: 'Insurance Policy from Secure Insurance Co. has been processed.',
-    type: 'system',
-    documentId: 5,
-    isRead: true,
-    createdAt: '2023-05-01T11:20:00Z'
-  }
-];
+import { useNotifications } from '../../services/api';
 
 const NotificationCenter: React.FC = () => {
-  const [notifications, setNotifications] = useState(mockNotifications);
+  const { notifications, markAsRead, markAllAsRead, deleteNotification, refresh } = useNotifications();
   const [filter, setFilter] = useState<string | null>(null);
   
+  // Map backend snake_case to camelCase used in UI for consistency
+  const mapped = notifications.map((n: any) => ({
+    id: n.id,
+    title: n.title,
+    message: n.message,
+    type: n.type,
+    documentId: n.document_id,
+    isRead: n.is_read,
+    createdAt: n.created_at,
+  }));
+
   // Filter notifications based on selected filter
-  const filteredNotifications = filter 
-    ? notifications.filter(notification => notification.type === filter)
-    : notifications;
-  
-  // Sort notifications by date (newest first) and unread first
+  const filteredNotifications = filter ? mapped.filter((n) => n.type === filter) : mapped;
+
+  // Sort notifications by unread first then date
   const sortedNotifications = [...filteredNotifications].sort((a, b) => {
-    // Sort by read status first
-    if (a.isRead !== b.isRead) {
-      return a.isRead ? 1 : -1;
-    }
-    // Then sort by date
+    if (a.isRead !== b.isRead) return a.isRead ? 1 : -1;
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
+
+  const unreadCount = mapped.filter((n) => !n.isRead).length;
 
   // Format date
   const formatDate = (dateString: string) => {
@@ -93,26 +61,6 @@ const NotificationCenter: React.FC = () => {
         return <FileText size={18} className="text-primary-500" />;
     }
   };
-
-  // Mark notification as read
-  const markAsRead = (id: number) => {
-    setNotifications(notifications.map(notification => 
-      notification.id === id ? { ...notification, isRead: true } : notification
-    ));
-  };
-
-  // Mark all notifications as read
-  const markAllAsRead = () => {
-    setNotifications(notifications.map(notification => ({ ...notification, isRead: true })));
-  };
-
-  // Delete notification
-  const deleteNotification = (id: number) => {
-    setNotifications(notifications.filter(notification => notification.id !== id));
-  };
-
-  // Count unread notifications
-  const unreadCount = notifications.filter(notification => !notification.isRead).length;
 
   return (
     <div className="space-y-4">

@@ -6,8 +6,11 @@ WORKDIR /app
 # Copy requirements file
 COPY requirements.txt .
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip & install requirements (includes numpy)
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+
+# Install PyTorch + Torchvision (CPU-only) – required by ColPali/SigLIP image processor
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch==2.2.2 torchvision==0.17.2
 
 # Install Tesseract OCR
 RUN apt-get update && apt-get install -y \

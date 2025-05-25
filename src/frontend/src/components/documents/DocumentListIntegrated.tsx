@@ -8,10 +8,14 @@ import {
   SortAsc,
   SortDesc,
   Loader,
-  MoreVertical
+  MoreVertical,
+  SlidersHorizontal
 } from 'lucide-react';
 import DataTable, { Column } from '../common/DataTable';
 import StatusBadge from '../common/StatusBadge';
+import { formatDate } from '../../utils/date';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem } from '../ui/dropdown-menu';
+import { Button } from '../ui/button';
 
 interface DocumentListProps {
   onSelectDocument: (document: any) => void;
@@ -26,7 +30,20 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
   const [filterStatus, setFilterStatus] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showActions, setShowActions] = useState<boolean>(false);
+  const STORAGE_KEY = 'inbox_hidden_cols';
+  const [hiddenCols, setHiddenCols] = useState<string[]>(() => {
+    try {
+      const v = localStorage.getItem(STORAGE_KEY);
+      return v ? JSON.parse(v) : [];
+    } catch {
+      return [];
+    }
+  });
   
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(hiddenCols));
+  }, [hiddenCols]);
+
   // Use the custom hook to fetch documents
   const { documents, loading, error } = useDocuments({
     status: filterStatus,
@@ -84,12 +101,48 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
     }
   };
 
-  // Filter by year segment then sort
+  // Document type icon component
+  const DocumentTypeIcon = ({ type }: { type: string }) => {
+    if (!type) return null;
+
+    const colour = (() => {
+      switch (type) {
+        case 'invoice':
+          return 'text-yellow-500';
+        case 'tax':
+        case 'tax-return':
+          return 'text-red-500';
+        default:
+          return 'text-blue-500';
+      }
+    })();
+
+    switch (type) {
+      case 'invoice':
+        return <FileCheck size={18} className={colour} />;
+      case 'tax':
+      case 'tax-return':
+        return <AlertTriangle size={18} className={colour} />;
+      default:
+        return <FileText size={18} className={colour} />;
+    }
+  };
+
+  // Year segment menu
+  const nowYear = new Date().getFullYear();
+  const yearOptions = [nowYear, nowYear - 1, nowYear - 2, 'Archive'] as const;
+  type YearSegment = typeof yearOptions[number];
+  const [yearSegment, setYearSegment] = useState<YearSegment>(nowYear);
+
   const filteredDocs = documents.filter((doc: any) => {
-    const dateStr = doc.documentDate || doc.created_at || doc.due_date;
+    const dateStr = doc.due_date || doc.document_date || doc.created_at;
     if (!dateStr) return false;
     const year = new Date(dateStr).getFullYear();
-    return year >= 2023;
+
+    if (yearSegment === 'Archive') {
+      return year < nowYear - 2;
+    }
+    return year === yearSegment;
   });
 
   const sortedDocuments = [...filteredDocs].sort((a, b) => {
@@ -109,25 +162,100 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
     return () => window.removeEventListener('documentsRefresh', refresh);
   }, []);
 
-  // Document type icon component
-  const DocumentTypeIcon = ({ type }: { type: string }) => {
-    switch (type) {
-      case 'invoice':
-        return <FileCheck size={18} className="text-primary-500" />;
-      case 'contract':
-        return <FileText size={18} className="text-secondary-500" />;
-      case 'reminder':
-        return <AlertTriangle size={18} className="text-warning-500" />;
-      default:
-        return <FileText size={18} className="text-secondary-500" />;
-    }
+  const toggleCol = (id: string) => {
+    setHiddenCols((prev) =>
+      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]
+    );
   };
 
-  // Year segment menu
-  const nowYear = new Date().getFullYear();
-  const yearOptions = [nowYear, nowYear - 1, nowYear - 2, 'Archive'] as const;
-  type YearSegment = typeof yearOptions[number];
-  const [yearSegment, setYearSegment] = useState<YearSegment>(nowYear);
+  const allCols: Column<any>[] = [
+    {
+      id: 'select',
+      header: (
+        <input
+          type="checkbox"
+          checked={selectedIds.size === sortedDocuments.length && sortedDocuments.length > 0}
+          onChange={toggleSelectAll}
+        />
+      ),
+      accessor: (row: any) => (
+        <input
+          type="checkbox"
+          checked={selectedIds.has(row.id)}
+          onChange={(e) => {
+            e.stopPropagation();
+            toggleSelect(row.id);
+          }}
+        />
+      ),
+      align: 'center',
+      width: '40px',
+    },
+    {
+      id: 'type',
+      header: '',
+      accessor: (row: any) => <DocumentTypeIcon type={row.documentType} />,
+      width: '40px',
+    },
+    { id: 'id', header: 'ID', accessor: (row: any) => (row.hash ? row.hash.slice(0, 8) : row.id) },
+    {
+      id: 'created',
+      header: (
+        <div className="flex items-center cursor-pointer" onClick={() => handleSort('created_at')}>
+          Date Added
+          {sortField === 'created_at' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
+        </div>
+      ),
+      accessor: (row: any) => formatDate(row.created_at),
+    },
+    {
+      id: 'due',
+      header: (
+        <div className="flex items-center cursor-pointer" onClick={() => handleSort('dueDate')}>
+          Due Date
+          {sortField === 'dueDate' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
+        </div>
+      ),
+      accessor: (row: any) => formatDate(row.due_date),
+    },
+    {
+      id: 'invoice_date',
+      header: (
+        <div className="flex items-center cursor-pointer" onClick={() => handleSort('document_date')}>
+          Invoice Date
+          {sortField === 'document_date' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
+        </div>
+      ),
+      accessor: (row: any) => formatDate(row.document_date),
+    },
+    {
+      id: 'vendor',
+      header: (
+        <div className="flex items-center cursor-pointer" onClick={() => handleSort('sender')}>
+          Vendor
+          {sortField === 'sender' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
+        </div>
+      ),
+      accessor: 'sender',
+    },
+    {
+      id: 'title',
+      header: (
+        <div className="flex items-center cursor-pointer" onClick={() => handleSort('title')}>
+          Invoice ID
+          {sortField === 'title' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
+        </div>
+      ),
+      accessor: 'title',
+    },
+    { id: 'currency', header: 'Curr.', accessor: 'currency' },
+    { id: 'amount', header: 'Amount', accessor: (row: any) => (row.amount ? row.amount.toFixed(2) : '-'), align: 'right' },
+    { id: 'vat', header: 'VAT', accessor: (row: any) => (row.tax_amount ? row.tax_amount.toFixed(2) : '-'), align: 'right' },
+    { id: 'tags', header: 'Tags', accessor: (row: any) => (row.tags?.map((t:any)=>t.name).join(', ') || '-'), width:'120px' },
+    { id: 'status', header: 'Status', accessor: (row: any) => <StatusBadge status={row.status} /> },
+  ];
+
+  const columns = allCols.filter((c)=> !c.id || !hiddenCols.includes(c.id));
 
   return (
     <div className="flex flex-col h-full">
@@ -145,6 +273,24 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
             </button>
           ))}
         </div>
+
+        {/* Column selector */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="gap-1">
+              <SlidersHorizontal size={14}/> Columns
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-40">
+            {['select','type','id','created','due','invoice_date','vendor','title','currency','amount','vat','tags','status'].map(id=> (
+              <DropdownMenuCheckboxItem
+                key={id}
+                checked={!hiddenCols.includes(id)}
+                onCheckedChange={()=>toggleCol(id)}
+              >{id}</DropdownMenuCheckboxItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         {selectedIds.size > 0 && (
           <div className="relative">
@@ -217,77 +363,10 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
         <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm overflow-hidden">
           {/* Build columns for DataTable */}
           {(() => {
-            const columns: Column<any>[] = [
-              {
-                header: (
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.size === sortedDocuments.length && sortedDocuments.length > 0}
-                    onChange={toggleSelectAll}
-                  />
-                ),
-                accessor: (row: any) => (
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(row.id)}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      toggleSelect(row.id);
-                    }}
-                  />
-                ),
-                align: 'center',
-                width: '40px',
-              },
-              {
-                header: '',
-                accessor: (row: any) => <DocumentTypeIcon type={row.documentType} />,
-                width: '40px',
-              },
-              {
-                header: (
-                  <div className="flex items-center cursor-pointer" onClick={() => handleSort('created_at')}>
-                    Date Added
-                    {sortField === 'created_at' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
-                  </div>
-                ),
-                accessor: (row: any) => (row.created_at ? new Date(row.created_at).toLocaleDateString() : '-'),
-              },
-              { header: 'ID', accessor: (row: any) => (row.hash ? row.hash.slice(0, 8) : row.id) },
-              {
-                header: (
-                  <div className="flex items-center cursor-pointer" onClick={() => handleSort('title')}>
-                    Invoice No
-                    {sortField === 'title' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
-                  </div>
-                ),
-                accessor: 'title',
-              },
-              {
-                header: (
-                  <div className="flex items-center cursor-pointer" onClick={() => handleSort('sender')}>
-                    Sender
-                    {sortField === 'sender' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
-                  </div>
-                ),
-                accessor: 'sender',
-              },
-              {
-                header: (
-                  <div className="flex items-center cursor-pointer" onClick={() => handleSort('dueDate')}>
-                    Due Date
-                    {sortField === 'dueDate' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
-                  </div>
-                ),
-                accessor: (row: any) => row.due_date || '-',
-              },
-              { header: 'Amount', accessor: (row: any) => (row.amount ? row.amount.toFixed(2) : '-'), align: 'right' },
-              { header: 'Curr.', accessor: 'currency' },
-              { header: 'Status', accessor: (row: any) => <StatusBadge status={row.status} /> },
-            ];
-
             return (
               <DataTable
+                enablePagination
+                enableColumnPicker={false}
                 columns={columns}
                 data={sortedDocuments}
                 isStriped

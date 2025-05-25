@@ -184,11 +184,11 @@ body {
 
 /* Main content styles */
 .main-content {
-  @apply pt-16 md:pl-64 min-h-screen transition-all duration-300;
+  @apply pt-16 md:pl-64 h-full transition-all duration-300;
 }
 
 .main-content-collapsed {
-  @apply md:pl-20;
+  @apply md:pl-20 h-full;
 }
 
 /* Document card styles */
@@ -349,4 +349,8 @@ body {
   .table th, .table td {
     @apply px-3 py-2;
   }
+}
+
+html, body {
+  height: 100%;
 }

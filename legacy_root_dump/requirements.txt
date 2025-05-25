@@ -17,3 +17,10 @@ python-jose==3.3.0
 passlib[bcrypt]==1.7.4
 ics==0.7.2
 bcrypt==3.2.2
+
+# Postgres & vector search support
+asyncpg==0.29.0
+pgvector==0.2.4
+
+# DB migrations
+alembic==1.13.1

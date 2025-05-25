@@ -12,7 +12,7 @@ const StatusBadge: React.FC<Props> = ({ status = '', label, className = '' }) =>
   const base = 'inline-block px-2 py-0.5 rounded-full text-xs font-medium';
   const s = status.toString().toLowerCase();
 
-  let colorClasses = 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300';
+  let colorClasses = 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-400';
   switch (s) {
     case 'paid':
       colorClasses = 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300';

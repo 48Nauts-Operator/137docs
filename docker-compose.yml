@@ -4,9 +4,11 @@ services:
       context: ./src/frontend
       dockerfile: Dockerfile
     ports:
-      - "3303:3000"
+      # vite preview listens on 4173 by default; expose on host 3303
+      - "3303:4173"
     volumes:
-      - ./src/frontend:/app
+      # Mount source only in dev mode (DISABLE_FRONTEND_MOUNT=1 to skip)
+      - ${DISABLE_FRONTEND_MOUNT:-./src/frontend}:/app
       - /app/node_modules
     depends_on:
       - backend
@@ -17,21 +19,63 @@ services:
     build:
       context: ./src/backend
       dockerfile: Dockerfile
+    env_file:
+      - .env
     ports:
       - "8808:8000"
     volumes:
       - ./src/backend:/app
-      # Bind local directories by default; override via env vars if desired
-      - ${WATCH_FOLDER:-./data/inbox}:/inbox
-      - ${ARCHIVE_FOLDER:-./data/archive}:/archive
+      # Mount host file-system root inside container at /hostfs
+      # Adjust HOSTFS_MOUNT to whatever path you want accessible
+      - ${HOSTFS_MOUNT:-./data}:/hostfs
     environment:
-      - WATCH_FOLDER=/inbox
-      - ARCHIVE_FOLDER=/archive
-      - DATABASE_URL=sqlite:///./documents.db
+      - HOSTFS_ROOT=/hostfs
+      # FolderWatcher watches /hostfs/Inbox by default; override via env if desired
+      - WATCH_FOLDER=/hostfs/Inbox
+      - ARCHIVE_FOLDER=/hostfs/Archive
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/137docs
       # Point to local Ollama (default) – override via `export OLLAMA_BASE_URL=...`
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      - LLM_MODEL=${LLM_MODEL:-deepseek-r1:1.5b}
+      - LLM_MODEL=${LLM_MODEL:-llama3}
       - LLM_API_URL=${LLM_API_URL:-http://host.docker.internal:11434/api/generate}
+      # ColPali / vector DB settings
+      - COLPALI_MODEL=${COLPALI_MODEL:-vidore/colpali-v1.1}
+      - VECTOR_DB_HOST=qdrant
+    depends_on:
+      - db
+      - qdrant
+    restart: unless-stopped
 
 # No dependency on an internal 'llm' container – backend will talk to the
 # host-running Ollama instance instead.
+
+# ---------------------------------------------------------------------------
+#  New Postgres service with pgvector extension
+# ---------------------------------------------------------------------------
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: 137docs
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    # No host binding -> avoids port conflicts; access Postgres via docker network only
+    # ports:
+    #   - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+# ---------------------------------------------------------------------------
+#  New Qdrant service for multi-vector storage (late interaction retrieval)
+# ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - qdrant_snap:/qdrant/snapshots
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  qdrant_snap:

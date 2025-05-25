@@ -2,7 +2,7 @@
 Analytics functionality for the Document Management System.
 """
 import logging
-from sqlalchemy import func, desc, and_, extract
+from sqlalchemy import func, desc, and_, extract, select, cast, Date, text
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -23,29 +23,45 @@ class AnalyticsService:
         """Initialize the analytics service with a database session."""
         self.db = db
     
-    def get_document_count_by_type(self) -> List[Dict[str, Any]]:
+    async def get_document_count_by_type(self) -> List[Dict[str, Any]]:
         """Get document count grouped by document type.
         
         Returns:
             List of dictionaries with document_type and count
         """
-        results = self.db.query(
-            Document.document_type,
-            func.count(Document.id).label("count")
-        ).group_by(Document.document_type).all()
+        if hasattr(self.db, 'execute'):
+            stmt = (
+                select(Document.document_type, func.count(Document.id).label('count'))
+                .group_by(Document.document_type)
+            )
+            res = await self.db.execute(stmt)
+            results = res.all()
+        else:
+            results = self.db.query(
+                Document.document_type,
+                func.count(Document.id).label("count")
+            ).group_by(Document.document_type).all()
         
         return [{"document_type": doc_type, "count": count} for doc_type, count in results]
     
-    def get_document_count_by_status(self) -> List[Dict[str, Any]]:
+    async def get_document_count_by_status(self) -> List[Dict[str, Any]]:
         """Get document count grouped by status.
         
         Returns:
             List of dictionaries with status and count
         """
-        results = self.db.query(
-            Document.status,
-            func.count(Document.id).label("count")
-        ).group_by(Document.status).all()
+        if hasattr(self.db, 'execute'):
+            stmt = (
+                select(Document.status, func.count(Document.id).label('count'))
+                .group_by(Document.status)
+            )
+            res = await self.db.execute(stmt)
+            results = res.all()
+        else:
+            results = self.db.query(
+                Document.status,
+                func.count(Document.id).label("count")
+            ).group_by(Document.status).all()
         
         return [{"status": status, "count": count} for status, count in results]
     
@@ -131,65 +147,55 @@ class AnalyticsService:
         
         return formatted_results
     
-    def get_payment_status_summary(self) -> Dict[str, Any]:
-        """Get summary of payment status for invoices.
-        
-        Returns:
-            Dictionary with payment status summary
-        """
-        # Get total invoice count
-        total_invoices = self.db.query(func.count(Document.id)).filter(
-            Document.document_type == 'invoice'
-        ).scalar() or 0
-        
-        # Get paid invoice count
-        paid_invoices = self.db.query(func.count(Document.id)).filter(
-            Document.document_type == 'invoice',
-            Document.status == 'paid'
-        ).scalar() or 0
-        
-        # Get unpaid invoice count
-        unpaid_invoices = self.db.query(func.count(Document.id)).filter(
-            Document.document_type == 'invoice',
-            Document.status == 'unpaid'
-        ).scalar() or 0
-        
-        # Get overdue invoice count
+    async def get_payment_status_summary(self) -> Dict[str, Any]:
+        """Get summary counts + amounts for invoice payment status (async-aware)."""
         today = datetime.utcnow().date()
-        overdue_invoices = self.db.query(func.count(Document.id)).filter(
-            Document.document_type == 'invoice',
-            Document.status == 'unpaid',
-            Document.due_date < today
-        ).scalar() or 0
-        
-        # Get total amount for all invoices
-        total_amount = self.db.query(func.sum(Document.amount)).filter(
-            Document.document_type == 'invoice',
-            Document.amount.isnot(None)
-        ).scalar() or 0
-        
-        # Get total amount for paid invoices
-        paid_amount = self.db.query(func.sum(Document.amount)).filter(
-            Document.document_type == 'invoice',
-            Document.status == 'paid',
-            Document.amount.isnot(None)
-        ).scalar() or 0
-        
-        # Get total amount for unpaid invoices
-        unpaid_amount = self.db.query(func.sum(Document.amount)).filter(
-            Document.document_type == 'invoice',
-            Document.status == 'unpaid',
-            Document.amount.isnot(None)
-        ).scalar() or 0
-        
-        # Get total amount for overdue invoices
-        overdue_amount = self.db.query(func.sum(Document.amount)).filter(
-            Document.document_type == 'invoice',
-            Document.status == 'unpaid',
-            Document.due_date < today,
-            Document.amount.isnot(None)
-        ).scalar() or 0
-        
+
+        async def _scalar(stmt):
+            if hasattr(self.db, "execute"):
+                res = await self.db.execute(stmt)
+                return res.scalar() or 0
+            return stmt.scalar()  # type: ignore – sync Session path
+
+        if hasattr(self.db, "execute"):
+            # Async mode – craft select() statements
+            iso_due = Document.due_date.op('~')(r'^\\d{4}-\\d{2}-\\d{2}$')
+            base = select(func.count(Document.id)).where(Document.document_type == "invoice")
+            total_invoices = await _scalar(base)
+
+            paid_invoices = await _scalar(
+                base.where(Document.status == "paid")
+            )
+            unpaid_invoices = await _scalar(
+                base.where(Document.status == "unpaid")
+            )
+            overdue_invoices = await _scalar(
+                base.where(Document.status == "unpaid", iso_due, cast(Document.due_date, Date) < today)
+            )
+
+            # Amount aggregates
+            amt_base = select(func.sum(Document.amount)).where(
+                Document.document_type == "invoice", Document.amount.isnot(None)
+            )
+            total_amount = await _scalar(amt_base)
+            paid_amount = await _scalar(amt_base.where(Document.status == "paid"))
+            unpaid_amount = await _scalar(amt_base.where(Document.status == "unpaid"))
+            overdue_amount = await _scalar(
+                amt_base.where(Document.status == "unpaid", iso_due, cast(Document.due_date, Date) < today)
+            )
+        else:
+            # Legacy sync Session
+            iso_due_sync = Document.due_date.op('~')(r'^\\d{4}-\\d{2}-\\d{2}$')
+            total_invoices = self.db.query(func.count(Document.id)).filter(Document.document_type == "invoice").scalar() or 0
+            paid_invoices = self.db.query(func.count(Document.id)).filter(Document.document_type == "invoice", Document.status == "paid").scalar() or 0
+            unpaid_invoices = self.db.query(func.count(Document.id)).filter(Document.document_type == "invoice", Document.status == "unpaid").scalar() or 0
+            overdue_invoices = self.db.query(func.count(Document.id)).filter(Document.document_type == "invoice", Document.status == "unpaid", iso_due_sync, cast(Document.due_date, Date) < today).scalar() or 0
+
+            total_amount = self.db.query(func.sum(Document.amount)).filter(Document.document_type == "invoice", Document.amount.isnot(None)).scalar() or 0
+            paid_amount = self.db.query(func.sum(Document.amount)).filter(Document.document_type == "invoice", Document.status == "paid", Document.amount.isnot(None)).scalar() or 0
+            unpaid_amount = self.db.query(func.sum(Document.amount)).filter(Document.document_type == "invoice", Document.status == "unpaid", Document.amount.isnot(None)).scalar() or 0
+            overdue_amount = self.db.query(func.sum(Document.amount)).filter(Document.document_type == "invoice", Document.status == "unpaid", iso_due_sync, cast(Document.due_date, Date) < today, Document.amount.isnot(None)).scalar() or 0
+
         return {
             "total_invoices": total_invoices,
             "paid_invoices": paid_invoices,
@@ -199,9 +205,9 @@ class AnalyticsService:
             "paid_amount": float(paid_amount),
             "unpaid_amount": float(unpaid_amount),
             "overdue_amount": float(overdue_amount),
-            "paid_percentage": (paid_invoices / total_invoices * 100) if total_invoices > 0 else 0,
-            "unpaid_percentage": (unpaid_invoices / total_invoices * 100) if total_invoices > 0 else 0,
-            "overdue_percentage": (overdue_invoices / total_invoices * 100) if total_invoices > 0 else 0
+            "paid_percentage": (paid_invoices / total_invoices * 100) if total_invoices else 0,
+            "unpaid_percentage": (unpaid_invoices / total_invoices * 100) if total_invoices else 0,
+            "overdue_percentage": (overdue_invoices / total_invoices * 100) if total_invoices else 0,
         }
     
     def get_upcoming_due_dates(self, days: int = 30) -> List[Dict[str, Any]]:
@@ -282,12 +288,12 @@ class AnalyticsService:
     # ------------------------------------------------------------------
 
     async def get_document_type_distribution(self, *_):
-        """Async wrapper returning document count by type (compatible with FastAPI)."""
-        return self.get_document_count_by_type()
+        """Async wrapper returning document count by type."""
+        return await self.get_document_count_by_type()
 
     async def get_payment_status_distribution(self, *_):
         """Async wrapper returning document count by status."""
-        return self.get_document_count_by_status()
+        return await self.get_document_count_by_status()
 
     async def get_monthly_document_count(self, year: int, *_):
         """Return monthly document counts for a specific year."""
@@ -302,7 +308,7 @@ class AnalyticsService:
     async def get_summary_metrics(self, *_):
         """Aggregate high-level KPIs used by dashboard."""
         return {
-            "by_type": self.get_document_count_by_type(),
-            "by_status": self.get_document_count_by_status(),
-            "payment_summary": self.get_payment_status_summary(),
+            "by_type": await self.get_document_count_by_type(),
+            "by_status": await self.get_document_count_by_status(),
+            "payment_summary": await self.get_payment_status_summary(),
         }

@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, Lock, Mail, Shield, Bell, Moon, Sun, Globe, Database, Save } from 'lucide-react';
+import { settingsApi } from '../../services/api';
+import DirectorySelect from '../common/DirectorySelect';
+import FileBrowser from '../common/FileBrowser';
 
 const Settings: React.FC = () => {
   const [activeTab, setActiveTab] = useState('account');
@@ -24,14 +27,58 @@ const Settings: React.FC = () => {
     autoSave: true,
     
     // Document settings
-    defaultDocumentFolder: '/Documents/Inbox',
+    inbox_path: '',
+    storage_root: '',
+    locked: false,
     autoOCR: true,
     autoTagging: true,
     
     // Privacy settings
     shareAnalytics: false,
-    storeHistory: true
+    storeHistory: true,
+
+    // Currency
+    defaultCurrency: 'USD',
   });
+
+  // Fetch initial settings from backend
+  useEffect(() => {
+    settingsApi.getSettings().then((data) => {
+      if (data && Object.keys(data).length) {
+        setSettings((prev) => ({ ...prev, ...data }));
+        setValidationResult(null);
+      }
+    });
+  }, []);
+
+  const [validationResult, setValidationResult] = useState<any | null>(null);
+  const [migrationStatus, setMigrationStatus] = useState<any | null>(null);
+
+  // Store the basename hints chosen via DirectorySelect so we can display
+  // them next to the Browse button without mutating the actual path value.
+  const [pickerHints, setPickerHints] = useState<{ inbox: string; storage: string }>({ inbox: '', storage: '' });
+
+  const handleValidate = async () => {
+    const res = await settingsApi.validateFolders(settings.inbox_path, settings.storage_root);
+    setValidationResult(res);
+  };
+
+  const handleMigrate = async () => {
+    await settingsApi.migrateStorage(settings.storage_root, false);
+    setMigrationStatus({ state: 'running' });
+  };
+
+  // Poll migration status when running
+  useEffect(() => {
+    if (migrationStatus?.state === 'running') {
+      const id = setInterval(async () => {
+        const st = await settingsApi.getMigrationStatus();
+        setMigrationStatus(st);
+        if (st.state !== 'running') clearInterval(id);
+      }, 3000);
+      return () => clearInterval(id);
+    }
+  }, [migrationStatus?.state]);
 
   // Handle input change
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -47,9 +94,9 @@ const Settings: React.FC = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     // Save settings to backend
-    console.log('Saving settings:', settings);
-    // Show success message
-    alert('Settings saved successfully!');
+    settingsApi.updateSettings(settings).then(() => {
+      alert('Settings saved successfully!');
+    });
   };
 
   return (
@@ -123,6 +170,16 @@ const Settings: React.FC = () => {
           >
             <Shield size={16} className="inline mr-1" />
             Privacy
+          </button>
+
+          {/* Save icon button */}
+          <button
+            type="button"
+            onClick={handleSubmit as any}
+            className="ml-auto px-3 py-3 hover:text-primary-600 text-secondary-600 dark:text-secondary-400 dark:hover:text-primary-400"
+            title="Save settings"
+          >
+            <Save size={18} />
           </button>
         </div>
         
@@ -348,53 +405,72 @@ const Settings: React.FC = () => {
             {/* Document Settings */}
             {activeTab === 'documents' && (
               <div className="space-y-6">
-                <h2 className="text-lg font-medium">Document Settings</h2>
-                
+                <h2 className="text-lg font-medium">Folder Configuration</h2>
+
                 <div className="space-y-4">
                   <div>
-                    <label htmlFor="defaultDocumentFolder" className="form-label">Default Document Folder</label>
+                    <label htmlFor="inbox_path" className="form-label">Inbox Folder (watched)</label>
                     <input
                       type="text"
-                      id="defaultDocumentFolder"
-                      name="defaultDocumentFolder"
+                      id="inbox_path"
+                      name="inbox_path"
                       className="form-input"
-                      value={settings.defaultDocumentFolder}
+                      value={settings.inbox_path}
                       onChange={handleChange}
                     />
+                    <DirectorySelect
+                      label={pickerHints.inbox || 'select…'}
+                      onSelect={(name) => setPickerHints((p) => ({ ...p, inbox: name }))}
+                    />
                   </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-medium">Automatic OCR</h3>
-                      <p className="text-sm text-secondary-500">Automatically process documents with OCR</p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        name="autoOCR"
-                        className="sr-only peer"
-                        checked={settings.autoOCR}
-                        onChange={handleChange}
-                      />
-                      <div className="w-11 h-6 bg-secondary-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 dark:peer-focus:ring-primary-800 rounded-full peer dark:bg-secondary-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-secondary-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-secondary-600 peer-checked:bg-primary-600"></div>
-                    </label>
+
+                  <div>
+                    <label htmlFor="storage_root" className="form-label">Storage Root</label>
+                    <input
+                      type="text"
+                      id="storage_root"
+                      name="storage_root"
+                      className="form-input"
+                      value={settings.storage_root}
+                      onChange={handleChange}
+                    />
+                    <DirectorySelect
+                      label={pickerHints.storage || 'select…'}
+                      onSelect={(name) => setPickerHints((p) => ({ ...p, storage: name }))}
+                    />
                   </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-medium">Automatic Tagging</h3>
-                      <p className="text-sm text-secondary-500">Automatically tag documents based on content</p>
+
+                  <button type="button" className="btn btn-outline" onClick={handleValidate}>Validate</button>
+
+                  {validationResult && (
+                    <pre className="bg-secondary-100 dark:bg-secondary-800 p-3 rounded text-xs overflow-x-auto">
+                      {JSON.stringify(validationResult, null, 2)}
+                    </pre>
+                  )}
+
+                  {settings.locked && (
+                    <div className="text-sm text-yellow-700 dark:text-yellow-400">
+                      Paths are locked. Changing storage root will trigger migration.
                     </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        name="autoTagging"
-                        className="sr-only peer"
-                        checked={settings.autoTagging}
-                        onChange={handleChange}
-                      />
-                      <div className="w-11 h-6 bg-secondary-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 dark:peer-focus:ring-primary-800 rounded-full peer dark:bg-secondary-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-secondary-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-secondary-600 peer-checked:bg-primary-600"></div>
-                    </label>
+                  )}
+
+                  {settings.locked && (
+                    <button type="button" className="btn btn-primary" onClick={handleMigrate} disabled={migrationStatus?.state==='running'}>
+                      {migrationStatus?.state==='running' ? 'Migrating…' : 'Migrate to new Storage Root'}
+                    </button>
+                  )}
+
+                  {migrationStatus && migrationStatus.state !== 'idle' && (
+                    <div className="text-sm mt-2">
+                      Status: {migrationStatus.state}
+                      {migrationStatus.detail && <span> – {migrationStatus.detail}</span>}
+                    </div>
+                  )}
+
+                  {/* Live preview of Inbox folder */}
+                  <div className="mt-6">
+                    <h3 className="font-medium mb-2">Inbox Preview</h3>
+                    <FileBrowser key={settings.inbox_path} initialPath={settings.inbox_path || '/hostfs'} className="max-h-96 overflow-auto" />
                   </div>
                 </div>
               </div>
@@ -442,13 +518,6 @@ const Settings: React.FC = () => {
                 </div>
               </div>
             )}
-            
-            <div className="mt-8 flex justify-end">
-              <button type="submit" className="btn btn-primary">
-                <Save size={16} className="mr-1" />
-                Save Settings
-              </button>
-            </div>
           </form>
         </div>
       </div>

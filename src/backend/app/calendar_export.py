@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from ics import Calendar, Event
 from app.models import Document
 from sqlalchemy.orm import Session
+from sqlalchemy import select, and_
 
 # Configure logging
 logging.basicConfig(
@@ -147,31 +148,38 @@ class CalendarExportService(CalendarService):
     # ------------------ Helper async wrappers expected by FastAPI endpoints ------------------ #
 
     async def get_events_for_month(self, db, month: int, year: int):
-        """Return list of events (documents with due_date) for given month/year."""
-        # Simple sync reuse of generate_calendar with filtering.
-        calendar = Calendar()
-        # Query documents with due_date in month
+        """Return list of events (documents with due_date) for given month/year (async)."""
         from datetime import date
+        from sqlalchemy import select, and_
         from app.models import Document
 
-        documents = db.query(Document).filter(
-            Document.due_date >= date(year, month, 1),
-            Document.due_date < date(year if month < 12 else year + 1, month % 12 + 1, 1),
-        ).all()
+        start = date(year, month, 1)
+        if month == 12:
+            end = date(year + 1, 1, 1)
+        else:
+            end = date(year, month + 1, 1)
 
-        events = []
-        for document in documents:
-            events.append({
-                "id": document.id,
-                "title": document.title,
-                "due_date": document.due_date.isoformat() if document.due_date else None,
-                "status": document.status,
-            })
-        return events
+        stmt = (
+            select(Document)
+            .where(and_(Document.due_date >= start, Document.due_date < end))
+        )
+        result = await db.execute(stmt)
+        documents = result.scalars().all()
+
+        return [
+            {
+                "id": doc.id,
+                "title": doc.sender or doc.title,
+                "due_date": doc.due_date if doc.due_date else None,
+                "status": doc.status,
+            }
+            for doc in documents
+        ]
 
     async def get_events_for_date(self, db, date_str: str):
-        """Return events for a specific date (YYYY-MM-DD)."""
-        from datetime import datetime, date
+        """Return events for a specific date (YYYY-MM-DD) – async."""
+        from datetime import datetime
+        from sqlalchemy import select
         from app.models import Document
 
         try:
@@ -179,7 +187,10 @@ class CalendarExportService(CalendarService):
         except ValueError:
             return []
 
-        documents = db.query(Document).filter(Document.due_date == target_date).all()
+        stmt = select(Document).where(Document.due_date == target_date)
+        result = await db.execute(stmt)
+        documents = result.scalars().all()
+
         return [
             {
                 "id": doc.id,

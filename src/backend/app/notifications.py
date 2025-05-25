@@ -1,184 +1,248 @@
-"""
-Notification models and functionality for the Document Management System.
-"""
-import logging
-from datetime import datetime, timedelta
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Text
-from sqlalchemy.orm import relationship
-from app.models import Base, Notification, Document
-from app.database import get_db
-from typing import List, Optional, Dict, Any
+"""app.notifications
+=====================
+Modular *async* notification framework for 137docs.
 
-# Configure logging
+Key design goals:
+• Backend-only **channels** (in-app DB, e-mail, Slack, SMS, …) implement the
+  :class:`NotificationChannel` interface and can be registered at runtime.
+• NotificationService stays thin – it orchestrates *persistence* (always
+  recorded in the database) and dispatches the event to all configured
+  channels.
+• Pure-SQLAlchemy **async** code; no blocking ``db.query`` calls.
+• Works out-of-the-box with a single *InAppChannel* so existing API routes
+  keep functioning.  New channels can be plugged in without changing the core
+  logic – ideal for future e-mail/push/SSE upgrades.
+"""
+
+from __future__ import annotations
+
+import logging
+from abc import ABC, abstractmethod
+from datetime import datetime, timedelta
+from typing import List, Optional, Sequence
+
+from sqlalchemy import select, update, func, text, cast, Date
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Notification, Document
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-class NotificationService:
-    """Service for managing notifications – stateless helper with async DB operations."""
-    
-    async def create_notification(self, db, title: str, message: str, notification_type: str, document_id: Optional[int] = None) -> Notification:
-        """Create a new notification.
-        
-        Args:
-            title: Notification title
-            message: Notification message
-            notification_type: Type of notification (e.g., "overdue", "reminder", "system")
-            document_id: Optional document ID associated with the notification
-            
-        Returns:
-            Created notification instance
+
+# ---------------------------------------------------------------------------
+# Channel abstraction
+# ---------------------------------------------------------------------------
+
+
+class NotificationChannel(ABC):
+    """Abstract *async* notification channel."""
+
+    @abstractmethod
+    async def send(self, notification: Notification, db: AsyncSession) -> None:  # noqa: D401,E501 – keep concise signature
+        """Deliver *notification* via this channel.
+
+        A DB session is supplied in case the channel needs extra queries
+        (e.g. to resolve user e-mail addresses).
         """
+
+
+class InAppChannel(NotificationChannel):
+    """Default channel – no external delivery, only stored in DB."""
+
+    async def send(self, notification: Notification, db: AsyncSession) -> None:  # noqa: D401,E501 – method required by interface
+        # Already persisted; nothing else to do.
+        return
+
+
+# ---------------------------------------------------------------------------
+# Serialisation helpers
+# ---------------------------------------------------------------------------
+
+
+def _notification_to_dict(notif: Notification) -> dict[str, object]:
+    """Return plain-JSON version of *notif* suitable for FastAPI responses."""
+
+    if notif is None:
+        return {}
+
+    return {
+        "id": notif.id,
+        "title": notif.title,
+        "message": notif.message,
+        "type": notif.type,
+        "document_id": notif.document_id,
+        "is_read": notif.is_read,
+        "created_at": notif.created_at.isoformat() if notif.created_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Notification service
+# ---------------------------------------------------------------------------
+
+
+class NotificationService:
+    """Stateless helper providing high-level notification APIs."""
+
+    def __init__(self, channels: Optional[Sequence[NotificationChannel]] = None):
+        # Always include in-app DB channel so notifications are recorded.
+        self.channels: List[NotificationChannel] = list(channels) if channels else []
+        # Ensure InAppChannel is present exactly once at the *front* of list.
+        self.channels.insert(0, InAppChannel())
+
+    # ---------------- CRUD helpers ----------------
+
+    async def create_notification(
+        self,
+        db: AsyncSession,
+        title: str,
+        message: str,
+        notification_type: str,
+        document_id: Optional[int] = None,
+    ) -> dict:
+        """Persist notification record and dispatch to channels."""
+
         notification = Notification(
             title=title,
             message=message,
-            notification_type=notification_type,
-            document_id=document_id
+            type=notification_type,
+            document_id=document_id,
         )
-        
+
         db.add(notification)
         await db.flush()
+        # Ensure PK assigned for downstream consumers
         await db.refresh(notification)
-        
-        logger.info(f"Created notification: {notification.id} - {notification.title}")
-        return notification
-    
-    async def get_all_notifications(self, db, limit: int = 100, offset: int = 0, include_read: bool = False) -> List[Notification]:
-        """Get notifications with optional filtering.
-        
-        Args:
-            limit: Maximum number of notifications to return
-            offset: Number of notifications to skip
-            include_read: Whether to include read notifications
-            
-        Returns:
-            List of notification instances
-        """
-        query = db.query(Notification)
-        
-        # Filter out read notifications if not included
+
+        # Fan-out to channels (ignore failures – log only)
+        for ch in self.channels:
+            try:
+                await ch.send(notification, db)
+            except Exception as exc:  # pragma: no-cover – diagnostics only
+                logger.warning("Notification channel %s failed: %s", ch.__class__.__name__, exc)
+
+        return _notification_to_dict(notification)
+
+    async def get_all_notifications(
+        self,
+        db: AsyncSession,
+        limit: int = 100,
+        offset: int = 0,
+        include_read: bool = False,
+    ) -> List[dict]:
+        q = select(Notification)
         if not include_read:
-            query = query.filter(Notification.is_read == False)
-        
-        # Apply pagination
-        query = query.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
-        
-        return query.all()
-    
-    async def mark_as_read(self, db, notification_id: int) -> Optional[Notification]:
-        """Mark a notification as read.
-        
-        Args:
-            notification_id: Notification ID
-            
-        Returns:
-            Updated notification instance or None if not found
-        """
-        notification = db.query(Notification).filter(Notification.id == notification_id).first()
-        if not notification:
-            return None
-        
-        notification.is_read = True
+            q = q.filter(Notification.is_read.is_(False))
+        q = q.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
+        res = await db.execute(q)
+        notifs = res.scalars().all()
+        return [_notification_to_dict(n) for n in notifs]
+
+    async def mark_as_read(self, db: AsyncSession, notification_id: int) -> Optional[dict]:
+        q = (
+            update(Notification)
+            .where(Notification.id == notification_id)
+            .values(is_read=True)
+            .returning(Notification)
+        )
+        res = await db.execute(q)
         await db.flush()
-        
-        logger.info(f"Marked notification as read: {notification.id}")
-        return notification
-    
-    async def mark_all_as_read(self, db) -> int:
-        """Mark all notifications as read.
-        
-        Returns:
-            Number of notifications marked as read
-        """
-        result = db.query(Notification).filter(Notification.is_read == False).update({"is_read": True})
+        notif = res.fetchone()
+        return _notification_to_dict(notif[0]) if notif else None
+
+    async def mark_all_as_read(self, db: AsyncSession) -> int:
+        q = (
+            update(Notification)
+            .where(Notification.is_read.is_(False))
+            .values(is_read=True)
+        )
+        res = await db.execute(q)
         await db.flush()
-        
-        logger.info(f"Marked {result} notifications as read")
-        return result
-    
-    async def check_overdue_documents(self, db) -> List[Notification]:
-        """Check for overdue documents and create notifications.
-        
-        Returns:
-            List of created notifications
-        """
+        return res.rowcount or 0
+
+    # ---------------- Business-logic helpers ----------------
+
+    async def check_overdue_documents(self, db: AsyncSession) -> List[Notification]:
         today = datetime.utcnow().date()
-        
-        # Find documents with due dates in the past that are not marked as paid
-        overdue_documents = db.query(Document).filter(
-            Document.due_date < today,
-            Document.status != "paid"
-        ).all()
-        
-        notifications = []
-        for document in overdue_documents:
-            # Check if notification already exists for this document
-            existing_notification = db.query(Notification).filter(
-                Notification.document_id == document.id,
-                Notification.notification_type == "overdue",
-                Notification.is_read == False
-            ).first()
-            
-            if not existing_notification:
-                # Create new notification
-                days_overdue = (today - document.due_date).days
-                notification = await self.create_notification(
-                    db,
-                    title=f"Overdue: {document.title}",
-                    message=f"Document '{document.title}' is {days_overdue} days overdue. Due date was {document.due_date}.",
-                    notification_type="overdue",
-                    document_id=document.id
-                )
-                notifications.append(notification)
-        
-        return notifications
-    
-    async def check_upcoming_due_dates(self, db, days_ahead: int = 7) -> List[Notification]:
-        """Check for documents with upcoming due dates and create reminders.
-        
-        Args:
-            days_ahead: Number of days ahead to check
-            
-        Returns:
-            List of created notifications
-        """
-        today = datetime.utcnow().date()
-        upcoming_date = today + timedelta(days=days_ahead)
-        
-        # Find documents with due dates in the upcoming period that are not marked as paid
-        upcoming_documents = db.query(Document).filter(
-            Document.due_date >= today,
-            Document.due_date <= upcoming_date,
-            Document.status != "paid"
-        ).all()
-        
-        notifications = []
-        for document in upcoming_documents:
-            # Check if notification already exists for this document
-            existing_notification = db.query(Notification).filter(
-                Notification.document_id == document.id,
-                Notification.notification_type == "reminder",
-                Notification.is_read == False
-            ).first()
-            
-            if not existing_notification:
-                # Create new notification
-                days_until_due = (document.due_date - today).days
-                notification = await self.create_notification(
-                    db,
-                    title=f"Upcoming: {document.title}",
-                    message=f"Document '{document.title}' is due in {days_until_due} days on {document.due_date}.",
-                    notification_type="reminder",
-                    document_id=document.id
-                )
-                notifications.append(notification)
-        
+
+        stmt = select(Document).filter(Document.status != "paid", Document.due_date != "")
+        overdue_docs = (await db.execute(stmt)).scalars().all()
+
+        notifications: List[Notification] = []
+        for doc in overdue_docs:
+            exists_stmt = select(Notification.id).filter(
+                Notification.document_id == doc.id,
+                Notification.type == "overdue",
+                Notification.is_read.is_(False),
+            )
+            if (await db.execute(exists_stmt)).first():
+                continue  # already notified
+
+            try:
+                doc_due = datetime.fromisoformat(str(doc.due_date)).date()  # type: ignore
+            except Exception:
+                continue
+
+            if doc_due >= today:
+                continue
+
+            days_overdue = (today - doc_due).days
+            notif = await self.create_notification(
+                db,
+                title=f"Overdue: {doc.title}",
+                message=f"Document '{doc.title}' is {days_overdue} days overdue (due {doc.due_date}).",
+                notification_type="overdue",
+                document_id=doc.id,
+            )
+            notifications.append(notif)
         return notifications
 
-    async def create_due_date_notification(self, db, document):
-        """Helper used by watcher to create reminder for a document with a due date."""
+    async def check_upcoming_due_dates(
+        self, db: AsyncSession, days_ahead: int = 7
+    ) -> List[Notification]:
+        today = datetime.utcnow().date()
+        upcoming_limit = today + timedelta(days=days_ahead)
+
+        stmt = select(Document).filter(Document.status != "paid", Document.due_date != "")
+        docs = (await db.execute(stmt)).scalars().all()
+
+        notifications: List[Notification] = []
+        for doc in docs:
+            exists_stmt = select(Notification.id).filter(
+                Notification.document_id == doc.id,
+                Notification.type == "reminder",
+                Notification.is_read.is_(False),
+            )
+            if (await db.execute(exists_stmt)).first():
+                continue
+
+            try:
+                doc_due = datetime.fromisoformat(str(doc.due_date)).date()  # type: ignore
+            except Exception:
+                continue
+
+            if not (today <= doc_due <= upcoming_limit):
+                continue
+
+            days_until = (doc_due - today).days
+            notif = await self.create_notification(
+                db,
+                title=f"Upcoming: {doc.title}",
+                message=f"Document '{doc.title}' is due in {days_until} days ({doc.due_date}).",
+                notification_type="reminder",
+                document_id=doc.id,
+            )
+            notifications.append(notif)
+        return notifications
+
+    async def create_due_date_notification(self, db: AsyncSession, document: Document):
         if not document.due_date:
             return None
         return await self.create_notification(

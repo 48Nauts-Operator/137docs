@@ -1,23 +1,42 @@
 import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { AuthProvider } from './context/AuthContext';
+import { EntityProvider } from './modules/entity/EntityContext';
+import RequireAuth from './components/auth/RequireAuth';
+import RequirePermission from './components/auth/RequirePermission';
 import Sidebar from './components/layout/Sidebar';
 import Navbar from './components/layout/Navbar';
 import DocumentsPage from './pages/DocumentsPage';
+import VisionSearchPage from './pages/VisionSearchPage';
 import InvoicesPage from './pages/InvoicesPage';
 import AddressBookPage from './pages/AddressBookPage';
 import CalendarPage from './pages/CalendarPage';
+import ChangelogPage from './pages/ChangelogPage';
+import FinanceAnalyticsPage from './pages/FinanceAnalyticsPage';
+import DashboardPage from './pages/DashboardPage';
+import SettingsPage from './components/settings/Settings';
+import NotificationCenter from './components/notifications/NotificationCenter';
+import LoginPage from './pages/LoginPage';
+import UsersPage from './pages/UsersPage';
+import ReportsPage from './pages/ReportsPage';
+import MarketplacePage from './pages/MarketplacePage';
+import Wizard from './modules/onboarding/Wizard';
 import './index.css';
 
 // Placeholder components for routes – these can later be replaced with the proper page components
-const Dashboard = () => <div className="p-6"><h1 className="text-2xl font-bold mb-6">Dashboard</h1><p>Dashboard content will go here</p></div>;
+const Dashboard = DashboardPage;
 const Documents = DocumentsPage;
 const Invoices = InvoicesPage;
-const Analytics = () => <div className="p-6"><h1 className="text-2xl font-bold mb-6">Analytics</h1><p>Analytics content will go here</p></div>;
+const Analytics = FinanceAnalyticsPage;
 const Calendar = CalendarPage;
-const Notifications = () => <div className="p-6"><h1 className="text-2xl font-bold mb-6">Notifications</h1><p>Notifications content will go here</p></div>;
-const Tags = () => <div className="p-6"><h1 className="text-2xl font-bold mb-6">Tags</h1><p>Tags content will go here</p></div>;
+const Notifications = NotificationCenter;
 const AddressBook = AddressBookPage;
-const Settings = () => <div className="p-6"><h1 className="text-2xl font-bold mb-6">Settings</h1><p>Settings content will go here</p></div>;
+const Settings = SettingsPage;
+const Changelog = ChangelogPage;
+const Users = UsersPage;
+const VisionSearch = VisionSearchPage;
+const Reports = ReportsPage;
+const Marketplace = MarketplacePage;
 
 const App: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -26,25 +45,60 @@ const App: React.FC = () => {
 
   return (
     <Router>
-      <div className="flex h-screen bg-secondary-50 dark:bg-secondary-900 text-secondary-900 dark:text-secondary-100">
-        <Sidebar collapsed={sidebarCollapsed} toggleSidebar={toggleSidebar} />
-        <div className={`flex-1 flex flex-col ${sidebarCollapsed ? 'main-content-collapsed' : 'main-content'}`}>
-          <Navbar collapsed={sidebarCollapsed} toggleSidebar={toggleSidebar} />
-          <main className="flex-1 overflow-y-auto p-4">
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/documents" element={<Documents />} />
-              <Route path="/invoices" element={<Invoices />} />
-              <Route path="/analytics" element={<Analytics />} />
-              <Route path="/calendar" element={<Calendar />} />
-              <Route path="/notifications" element={<Notifications />} />
-              <Route path="/tags" element={<Tags />} />
-              <Route path="/address-book" element={<AddressBook />} />
-              <Route path="/settings" element={<Settings />} />
-            </Routes>
-          </main>
-        </div>
-      </div>
+      <AuthProvider>
+        <EntityProvider>
+          <Routes>
+            <Route path="/onboarding" element={<Wizard />} />
+            <Route path="/login" element={<LoginPage />} />
+            {/* Protected routes */}
+            <Route
+              path="*"
+              element={
+                <RequireAuth>
+                  <div className="flex h-screen bg-secondary-50 dark:bg-secondary-900 text-secondary-900 dark:text-secondary-100">
+                    <Sidebar collapsed={sidebarCollapsed} toggleSidebar={toggleSidebar} />
+                    <div className={`flex-1 flex flex-col ${sidebarCollapsed ? 'main-content-collapsed' : 'main-content'}`}>
+                      <Navbar collapsed={sidebarCollapsed} toggleSidebar={toggleSidebar} />
+                      <main className="flex-1 overflow-y-auto p-4">
+                        <Routes>
+                          <Route path="/" element={<Dashboard />} />
+                          <Route path="/documents" element={<Documents />} />
+                          <Route path="/vision-search" element={<VisionSearch />} />
+                          <Route path="/invoices" element={<Invoices />} />
+                          <Route path="/documents-all" element={<Documents />} />
+                          <Route
+                            path="/analytics"
+                            element={
+                              <RequirePermission roles={["admin"]}>
+                                <Analytics />
+                              </RequirePermission>
+                            }
+                          />
+                          <Route path="/users" element={<RequirePermission roles={["admin"]}><Users /></RequirePermission>} />
+                          <Route path="/calendar" element={<Calendar />} />
+                          <Route path="/notifications" element={<Notifications />} />
+                          <Route path="/address-book" element={<AddressBook />} />
+                          <Route path="/changelog" element={<Changelog />} />
+                          <Route
+                            path="/settings"
+                            element={
+                              <RequirePermission roles={["admin"]}>
+                                <Settings />
+                              </RequirePermission>
+                            }
+                          />
+                          <Route path="/marketplace" element={<Marketplace />} />
+                          <Route path="/reports" element={<Reports />} />
+                        </Routes>
+                      </main>
+                    </div>
+                  </div>
+                </RequireAuth>
+              }
+            />
+          </Routes>
+        </EntityProvider>
+      </AuthProvider>
     </Router>
   );
 };

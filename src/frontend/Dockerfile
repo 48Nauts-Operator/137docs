@@ -13,8 +13,11 @@ RUN npm install
 # Copy the rest of the code
 COPY . .
 
-# Build the app
-# RUN npm run build
+# Retain build at image-build time to prime cache, but run build again at
+# container start so that any host-mounted changes are reflected.
 
-# Start the app in development mode
-CMD ["npm", "start"]
+RUN npm run build
+
+# Use sh -c so we can chain commands; we rebuild then serve production build
+# via Vite preview. Port is configured in package.json start script.
+CMD ["sh", "-c", "npm run build && npm run start"]

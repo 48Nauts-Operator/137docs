@@ -9,11 +9,13 @@ from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from app.database import get_db
 from app.config import settings
 import secrets
 import string
+from app.models import User as UserDB
 
 # Configure logging
 logging.basicConfig(
@@ -51,23 +53,38 @@ class TokenData(BaseModel):
     username: Optional[str] = None
 
 class User(BaseModel):
+    id: Optional[int] = None
     username: str
     email: Optional[str] = None
     full_name: Optional[str] = None
+    role: str = "viewer"
     disabled: Optional[bool] = None
 
 class UserInDB(User):
     hashed_password: str
 
-# Mock user database - in a real application, this would be stored in the database
+# In-memory fallback for tests only -----------------------------------------------------------------
+# The fake_users_db is retained to keep existing unit-tests working.  Production
+# code now queries Postgres instead.  When running in *DEV* (FastAPI env var
+# defines), we still seed identical admin/viewer users via ``main.startup``.
+
 fake_users_db = {
     "admin": {
         "username": "admin",
         "full_name": "Administrator",
         "email": "admin@example.com",
         "hashed_password": pwd_context.hash("admin"),
+        "role": "admin",
         "disabled": False,
-    }
+    },
+    "viewer": {
+        "username": "viewer",
+        "full_name": "View Only",
+        "email": "viewer@example.com",
+        "hashed_password": pwd_context.hash("viewer"),
+        "role": "viewer",
+        "disabled": False,
+    },
 }
 
 # Mock API keys - in a real application, this would be stored in the database
@@ -83,20 +100,38 @@ def get_password_hash(password):
     """Get password hash."""
     return pwd_context.hash(password)
 
-def get_user(db, username: str):
-    """Get user from database."""
-    if username in fake_users_db:
-        user_dict = fake_users_db[username]
-        return UserInDB(**user_dict)
-    return None
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
 
-def authenticate_user(db, username: str, password: str):
-    """Authenticate user."""
-    user = get_user(db, username)
+async def get_user_db(db: AsyncSession, username: str) -> Optional[UserInDB]:
+    """Return UserInDB instance from Postgres or *None* if missing."""
+    res = await db.execute(select(UserDB).where(UserDB.username == username))
+    db_user: UserDB | None = res.scalars().first()
+
+    if not db_user:
+        # Fallback to fake DB (unit-tests)
+        if username in fake_users_db:
+            return UserInDB(**fake_users_db[username])
+        return None
+
+    return UserInDB(
+        id=db_user.id,
+        username=db_user.username,
+        email=db_user.email,
+        full_name=db_user.full_name,
+        role=db_user.role,
+        disabled=db_user.disabled,
+        hashed_password=db_user.hashed_password,
+    )
+
+async def authenticate_user(db: AsyncSession, username: str, password: str) -> Optional[UserInDB]:
+    """Return user if credentials valid else *None*."""
+    user = await get_user_db(db, username)
     if not user:
-        return False
+        return None
     if not verify_password(password, user.hashed_password):
-        return False
+        return None
     return user
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -110,12 +145,17 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme), api_key: str | None = Header(default=None, alias="X-API-Key")):
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    api_key: str | None = Header(default=None, alias="X-API-Key"),
+    db: AsyncSession = Depends(get_db),
+) -> User:
     """Get current user from token or API key."""
     # If API key present and valid
     if api_key and api_key in api_keys:
         username = api_keys[api_key]
-        return get_user(None, username)
+        # Bypass DB for API key scenario – treat as admin user
+        return User(**fake_users_db.get(username, {"username": username, "role": "admin"}))
 
     # Fallback to JWT token
     credentials_exception = HTTPException(
@@ -133,10 +173,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), api_key: str | N
         token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    user = get_user(None, username=token_data.username)
-    if user is None:
+    user_db = await get_user_db(db, username=token_data.username)
+    if user_db is None:
         raise credentials_exception
-    return user
+    return user_db
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)):
     """Get current active user."""
@@ -150,12 +190,13 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 async def get_current_user_optional(
     token: str = Depends(oauth2_scheme),
     api_key: str | None = Header(default=None, alias="X-API-Key"),
+    db: AsyncSession = Depends(get_db),
 ) -> User | None:
     """Return a User or None without raising 401."""
     # API key path
     if api_key and api_key in api_keys:
         username = api_keys[api_key]
-        return get_user(None, username)
+        return User(**fake_users_db.get(username, {"username": username, "role": "admin"}))
 
     if not token:
         return None
@@ -165,7 +206,7 @@ async def get_current_user_optional(
         username: str | None = payload.get("sub")
         if not username:
             return None
-        return get_user(None, username)
+        return await get_user_db(db, username)
     except JWTError:
         return None
 

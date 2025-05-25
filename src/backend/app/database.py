@@ -5,12 +5,14 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.config import settings
 
-# Create SQLite database URL
-DATABASE_URL = f"sqlite:///{settings.DATABASE_PATH}"
-ASYNC_DATABASE_URL = f"sqlite+aiosqlite:///{settings.DATABASE_PATH}"
+# Resolve DB URL – prefer explicit DATABASE_URL env, fallback to local SQLite
+if settings.DATABASE_URL:
+    ASYNC_DATABASE_URL = settings.DATABASE_URL
+else:
+    ASYNC_DATABASE_URL = f"sqlite+aiosqlite:///{settings.DATABASE_PATH}"
 
 # Create async engine
-async_engine = create_async_engine(ASYNC_DATABASE_URL)
+async_engine = create_async_engine(ASYNC_DATABASE_URL, pool_pre_ping=True)
 
 # Alias for legacy imports expecting `engine`
 engine = async_engine

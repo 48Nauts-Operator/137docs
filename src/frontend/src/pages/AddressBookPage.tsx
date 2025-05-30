@@ -10,7 +10,7 @@ const AddressBookPage: React.FC = () => {
 
   const [showModal, setShowModal] = useState(false);
   const STORAGE_KEY = 'address_hidden_cols';
-  const defaultHidden = ['county', 'iban', 'bic', 'currency'];
+  const defaultHidden = ['county', 'bank_details', 'address', 'created_from', 'last_seen_in'];
   const [hiddenCols, setHiddenCols] = useState<string[]>(() => {
     try {
       const s = localStorage.getItem(STORAGE_KEY);
@@ -34,11 +34,13 @@ const AddressBookPage: React.FC = () => {
     county: '',
     country: '',
     vat_id: '',
+    bank_details: '',
     tags: '',
     group_name: '',
-    iban: '',
-    bic: '',
-    currency: '',
+    last_transaction: '',
+    address: '',
+    created_from: '',
+    last_seen_in: ''
   };
 
   const [form, setForm] = useState<any>(blankForm);
@@ -89,7 +91,7 @@ const AddressBookPage: React.FC = () => {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-44">
-              {['name','company','street','address2','zip','town','county','country','email','phone','vat_id','iban','bic','currency','group_name','tags'].map(id=>(
+              {['name','company','street','address2','zip','town','county','country','email','phone','vat_id','bank_details','group_name','tags','last_transaction','address','created_from','last_seen_in'].map(id=>(
                 <DropdownMenuCheckboxItem key={id} checked={!hiddenCols.includes(id)} onCheckedChange={()=>setHiddenCols(prev=> prev.includes(id)? prev.filter(c=>c!==id): [...prev,id])}>{id}</DropdownMenuCheckboxItem>
               ))}
             </DropdownMenuContent>
@@ -114,11 +116,13 @@ const AddressBookPage: React.FC = () => {
           { id: 'email', header: 'Email', accessor: 'email' },
           { id: 'phone', header: 'Phone', accessor: 'phone' },
           { id: 'vat_id', header: 'VAT Number', accessor: 'vat_id' },
-          { id: 'iban', header: 'IBAN', accessor: 'iban' },
-          { id: 'bic', header: 'BIC', accessor: 'bic' },
-          { id: 'currency', header: 'Currency', accessor: 'currency' },
+          { id: 'bank_details', header: 'Bank Details', accessor: 'bank_details' },
           { id: 'group_name', header: 'Group/Sector', accessor: 'group_name' },
           { id: 'tags', header: 'Tags', accessor: (r:any)=>r.tags },
+          { id: 'last_transaction', header: 'Last Transaction', accessor: 'last_transaction' },
+          { id: 'address', header: 'Address', accessor: 'address' },
+          { id: 'created_from', header: 'Created From', accessor: 'created_from' },
+          { id: 'last_seen_in', header: 'Last Seen In', accessor: 'last_seen_in' },
           { id: 'actions', header: '', accessor: (r:any)=> (
               <div className="flex gap-2">
                 <button onClick={()=>{setEditingId(r.id); setForm({...blankForm, ...r}); setShowModal(true);}} className="text-secondary-500 hover:text-primary-600">

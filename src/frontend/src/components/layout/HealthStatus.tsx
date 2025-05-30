@@ -2,8 +2,8 @@ import React from 'react';
 import { Circle, Database } from 'lucide-react';
 import { useHealth } from '../../services/api';
 
-const dot = (status:string)=>{
-  const color = status.startsWith('ok')? 'text-green-500' : 'text-red-500';
+const dot = (status: string | undefined) => {
+  const color = (status && status.startsWith('ok')) ? 'text-green-500' : 'text-red-500';
   return <Circle size={10} className={color} fill="currentColor" />;
 };
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useDocument, documentApi, API_BASE_URL } from '../../services/api';
+import { useDocument, documentApi, API_BASE_URL, settingsApi, useTenants } from '../../services/api';
 import { 
   FileText, 
   Download, 
@@ -15,7 +15,15 @@ import {
   Building,
   CheckCircle,
   XCircle,
-  Loader
+  Loader,
+  Brain,
+  Sparkles,
+  Zap,
+  X,
+  Save,
+  Lightbulb,
+  BarChart3,
+  UserCheck
 } from 'lucide-react';
 import StatusBadge from '../common/StatusBadge';
 
@@ -30,8 +38,19 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
   const [isAddingTag, setIsAddingTag] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   
+  // LLM processing state
+  const [llmStatus, setLlmStatus] = useState<any>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isSuggestingTags, setIsSuggestingTags] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isExtractingTenant, setIsExtractingTenant] = useState(false);
+  const [analysis, setAnalysis] = useState<any>(null);
+  
   // Use the custom hook to fetch document details
   const { document, loading, error } = useDocument(documentId);
+  
+  // Get tenants for recipient dropdown
+  const { tenants, loading: tenantsLoading } = useTenants();
   
   // Local form state for editing
   const [formData, setFormData] = useState({
@@ -46,7 +65,7 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
     recipient: '',
   });
   
-  // Fetch document tags
+  // Fetch document tags and LLM status
   useEffect(() => {
     const fetchTags = async () => {
       if (documentId) {
@@ -59,7 +78,17 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
       }
     };
     
+    const fetchLlmStatus = async () => {
+      try {
+        const status = await settingsApi.getLlmStatus();
+        setLlmStatus(status);
+      } catch (err) {
+        console.error('Error fetching LLM status:', err);
+      }
+    };
+    
     fetchTags();
+    fetchLlmStatus();
   }, [documentId]);
   
   // Populate form when document loads or changes
@@ -153,6 +182,110 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
     }
   };
 
+  // LLM processing functions
+  const handleProcessDocument = async () => {
+    if (!documentId || !llmStatus?.enabled) return;
+    
+    setIsProcessing(true);
+    try {
+      const result = await settingsApi.processDocument(documentId, false);
+      if (result.status === 'success') {
+        // Refresh document data
+        window.dispatchEvent(new Event('documentsRefresh'));
+        alert('Document processed successfully!');
+      } else {
+        alert(`Processing failed: ${result.message}`);
+      }
+    } catch (err) {
+      console.error('Error processing document:', err);
+      alert('Error processing document');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleSuggestTags = async () => {
+    if (!documentId || !llmStatus?.enabled) return;
+    
+    setIsSuggestingTags(true);
+    try {
+      const result = await settingsApi.suggestTags(documentId);
+      if (result.status === 'success' && result.suggested_tags) {
+        // Add suggested tags to the current tags
+        const newTags = result.suggested_tags.filter((tag: string) => !tags.includes(tag));
+        if (newTags.length > 0) {
+          for (const tag of newTags) {
+            await documentApi.addTagToDocument(documentId, tag);
+          }
+          setTags([...tags, ...newTags]);
+          alert(`Added ${newTags.length} suggested tags!`);
+        } else {
+          alert('No new tags to suggest');
+        }
+      } else {
+        alert('No tags suggested');
+      }
+    } catch (err) {
+      console.error('Error suggesting tags:', err);
+      alert('Error suggesting tags');
+    } finally {
+      setIsSuggestingTags(false);
+    }
+  };
+
+  const handleAnalyzeDocument = async () => {
+    if (!documentId || !llmStatus?.enabled) return;
+    
+    setIsAnalyzing(true);
+    try {
+      const result = await settingsApi.analyzeDocument(documentId);
+      if (result.status === 'success' && result.analysis) {
+        setAnalysis(result.analysis);
+        setActiveTab('analysis');
+      } else {
+        alert('Analysis failed');
+      }
+    } catch (err) {
+      console.error('Error analyzing document:', err);
+      alert('Error analyzing document');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleExtractTenant = async () => {
+    if (!documentId || !llmStatus?.enabled) return;
+    
+    setIsExtractingTenant(true);
+    try {
+      const result = await settingsApi.extractTenant(documentId);
+      if (result.status === 'success') {
+        // Refresh document data and tenants
+        window.dispatchEvent(new Event('documentsRefresh'));
+        
+        // Show success message with details
+        const action = result.action === 'created' ? 'Created new tenant' : 
+                      result.action === 'found' ? 'Found existing tenant' : 'Updated tenant';
+        alert(`${action}: ${result.tenant.alias}\n${result.message}`);
+        
+        // Update form data if in edit mode
+        if (isEditing && result.tenant) {
+          setFormData(prev => ({
+            ...prev,
+            recipient: result.tenant.alias
+          }));
+        }
+      } else {
+        alert(`Tenant extraction failed: ${result.message}`);
+      }
+    } catch (err) {
+      console.error('Error extracting tenant:', err);
+      alert('Error extracting tenant information');
+    } finally {
+      setIsExtractingTenant(false);
+    }
+  };
+
   if (!documentId) {
     return (
       <div className="document-preview flex items-center justify-center h-full">
@@ -237,6 +370,45 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
         <div className="flex space-x-2">
           {!isEditing ? (
             <>
+              {/* LLM Actions */}
+              {llmStatus?.enabled && (
+                <>
+                  <button 
+                    className="p-1.5 rounded-md hover:bg-primary-100 dark:hover:bg-primary-700 text-primary-600 dark:text-primary-400" 
+                    title="Process with AI"
+                    onClick={handleProcessDocument}
+                    disabled={isProcessing}
+                  >
+                    {isProcessing ? <Loader size={18} className="animate-spin" /> : <Brain size={18} />}
+                  </button>
+                  <button 
+                    className="p-1.5 rounded-md hover:bg-primary-100 dark:hover:bg-primary-700 text-primary-600 dark:text-primary-400" 
+                    title="Suggest Tags"
+                    onClick={handleSuggestTags}
+                    disabled={isSuggestingTags}
+                  >
+                    {isSuggestingTags ? <Loader size={18} className="animate-spin" /> : <Sparkles size={18} />}
+                  </button>
+                  <button 
+                    className="p-1.5 rounded-md hover:bg-primary-100 dark:hover:bg-primary-700 text-primary-600 dark:text-primary-400" 
+                    title="Analyze Document"
+                    onClick={handleAnalyzeDocument}
+                    disabled={isAnalyzing}
+                  >
+                    {isAnalyzing ? <Loader size={18} className="animate-spin" /> : <Zap size={18} />}
+                  </button>
+                  <button 
+                    className="p-1.5 rounded-md hover:bg-primary-100 dark:hover:bg-primary-700 text-primary-600 dark:text-primary-400" 
+                    title="Smart Recipient - Extract and assign tenant"
+                    onClick={handleExtractTenant}
+                    disabled={isExtractingTenant}
+                  >
+                    {isExtractingTenant ? <Loader size={18} className="animate-spin" /> : <UserCheck size={18} />}
+                  </button>
+                  <div className="border-l border-secondary-300 dark:border-secondary-600 mx-1"></div>
+                </>
+              )}
+              
               <button className="p-1.5 rounded-md hover:bg-secondary-100 dark:hover:bg-secondary-700" title="Download">
                 <Download size={18} />
               </button>
@@ -298,6 +470,19 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
           >
             Related
           </button>
+          {llmStatus?.enabled && analysis && (
+            <button
+              className={`px-4 py-2 text-sm font-medium border-b-2 ${
+                activeTab === 'analysis'
+                  ? 'border-primary-500 text-primary-600 dark:text-primary-400'
+                  : 'border-transparent text-secondary-500 hover:text-secondary-700 dark:hover:text-secondary-300'
+              }`}
+              onClick={() => setActiveTab('analysis')}
+            >
+              <Brain size={16} className="inline mr-1" />
+              Analysis
+            </button>
+          )}
         </nav>
       </div>
 
@@ -434,13 +619,22 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
             {/* Recipient */}
             <div className="space-y-1">
               <div className="text-xs text-secondary-500 dark:text-secondary-400">Recipient</div>
-              <input
-                type="text"
+              <select
                 name="recipient"
                 value={formData.recipient}
                 onChange={handleChange}
-                className="form-input w-full text-gray-900 dark:text-gray-400"
-              />
+                className="form-select w-full text-gray-900 dark:text-gray-400"
+              >
+                <option value="">Select recipient...</option>
+                {tenants.map((tenant) => (
+                  <option key={tenant.id} value={tenant.alias}>
+                    {tenant.alias} ({tenant.type === 'company' ? 'Company' : 'Individual'})
+                  </option>
+                ))}
+              </select>
+              {tenantsLoading && (
+                <div className="text-xs text-secondary-500">Loading tenant options...</div>
+              )}
             </div>
             </>
             )}
@@ -517,8 +711,32 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                 <div className="text-sm font-medium">Recipient</div>
                 <div className="p-3 bg-secondary-50 dark:bg-secondary-800 rounded-md">
                   <div className="flex items-center">
-                    <User size={16} className="mr-1.5 text-secondary-500" />
-                    <span className="font-medium">Your Company</span>
+                    {/* Find the tenant that matches the document recipient */}
+                    {(() => {
+                      const matchingTenant = tenants.find(t => t.alias === document.recipient);
+                      if (matchingTenant) {
+                        return (
+                          <>
+                            {matchingTenant.type === 'company' ? (
+                              <Building size={16} className="mr-1.5 text-blue-500" />
+                            ) : (
+                              <User size={16} className="mr-1.5 text-green-500" />
+                            )}
+                            <div>
+                              <span className="font-medium">{matchingTenant.alias}</span>
+                              <div className="text-xs text-secondary-500">{matchingTenant.name}</div>
+                            </div>
+                          </>
+                        );
+                      } else {
+                        return (
+                          <>
+                            <User size={16} className="mr-1.5 text-secondary-500" />
+                            <span className="font-medium">{document.recipient || 'Unknown Recipient'}</span>
+                          </>
+                        );
+                      }
+                    })()}
                   </div>
                 </div>
               </div>
@@ -618,6 +836,80 @@ const DocumentPreviewIntegrated: React.FC<DocumentPreviewIntegratedProps> = ({ d
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'analysis' && analysis && (
+          <div className="space-y-6">
+            <div className="flex items-center space-x-2">
+              <Brain size={20} className="text-primary-600" />
+              <h3 className="text-lg font-medium">AI Analysis</h3>
+            </div>
+            
+            {analysis.summary && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium text-secondary-700 dark:text-secondary-300">Summary</h4>
+                <div className="p-3 bg-secondary-50 dark:bg-secondary-800 rounded-md">
+                  <p className="text-sm">{analysis.summary}</p>
+                </div>
+              </div>
+            )}
+
+            {analysis.key_points && analysis.key_points.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium text-secondary-700 dark:text-secondary-300">Key Points</h4>
+                <div className="space-y-2">
+                  {analysis.key_points.map((point: string, index: number) => (
+                    <div key={index} className="flex items-start space-x-2">
+                      <div className="w-1.5 h-1.5 bg-primary-500 rounded-full mt-2 flex-shrink-0"></div>
+                      <p className="text-sm">{point}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {analysis.entities && analysis.entities.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium text-secondary-700 dark:text-secondary-300">Named Entities</h4>
+                <div className="flex flex-wrap gap-2">
+                  {analysis.entities.map((entity: string, index: number) => (
+                    <span key={index} className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 rounded text-xs">
+                      {entity}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {analysis.sentiment && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium text-secondary-700 dark:text-secondary-300">Sentiment</h4>
+                <div className="flex items-center space-x-2">
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                    analysis.sentiment === 'positive' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                    analysis.sentiment === 'negative' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' :
+                    'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200'
+                  }`}>
+                    {analysis.sentiment.charAt(0).toUpperCase() + analysis.sentiment.slice(1)}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {analysis.action_items && analysis.action_items.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium text-secondary-700 dark:text-secondary-300">Action Items</h4>
+                <div className="space-y-2">
+                  {analysis.action_items.map((item: string, index: number) => (
+                    <div key={index} className="flex items-start space-x-2">
+                      <CheckCircle size={16} className="text-green-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-sm">{item}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

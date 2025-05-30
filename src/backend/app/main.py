@@ -8,8 +8,8 @@ from fastapi.responses import JSONResponse, FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Union
 from app.database import get_db, engine
-from app.models import Base, Document, Tag, User, document_tag as dt, AddressEntry, VectorEntry
-from app.repository import DocumentRepository, UserRepository
+from app.models import Base, Document, Tag, User, document_tag as dt, AddressEntry, VectorEntry, Entity
+from app.repository import DocumentRepository, UserRepository, LLMConfigRepository, TenantRepository, ProcessingRuleRepository
 from app.watcher import FolderWatcher
 from app.ocr import OCRProcessor
 from app.llm import LLMService
@@ -26,16 +26,18 @@ import asyncio
 import logging
 import re
 import hashlib
-from sqlalchemy import select, text, update, func
+from sqlalchemy import select, text, update, func, or_
 import secrets
 from functools import partial
 from difflib import SequenceMatcher
 from pdf2image import convert_from_path
 import json
 from PIL import Image
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.services.entity import EntityService
 from app.services.onboarding import OnboardingService
+from collections import defaultdict
+import calendar
 
 # Configure logging
 logging.basicConfig(
@@ -60,12 +62,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include API routers
+from app.api.llm import router as llm_router
+app.include_router(llm_router, prefix="/api/llm", tags=["llm"])
+
 # Initialize services
 document_repository = DocumentRepository()
 ocr_processor = OCRProcessor()
 llm_service = LLMService()
 notification_service = NotificationService()
 user_repository = UserRepository()
+llm_config_repository = LLMConfigRepository()
+tenant_repository = TenantRepository()
 
 # ---------------------------------------------------------------------------
 # Filesystem browsing helper – expose host filesystem (mounted at HOSTFS_ROOT)
@@ -209,7 +217,7 @@ async def startup():
 
             try:
                 await asyncio.to_thread(_migrate)
-            except Exception as exc:  # pragma: no-cover – diagnostics only
+            except Exception as exc:  # pragma: no cover – diagnostics only
                 logger.warning("Alembic migration failed: %s", exc)
 
         await _run_migrations(str(conn.engine.url))
@@ -421,7 +429,8 @@ _watcher_task: asyncio.Task | None = None  # Global ref so we can cancel/reload
 
 async def start_folder_watcher(path: str):
     """Run a FolderWatcher for *path* until cancelled."""
-    folder_watcher = FolderWatcher(path, process_new_document)
+    # Use shorter polling interval for better responsiveness on Docker/macOS
+    folder_watcher = FolderWatcher(path, process_new_document, poll_interval=10)
     await folder_watcher.start_watching()
 
 
@@ -448,6 +457,7 @@ def reload_watcher(new_path: str):
 
 async def process_new_document(file_path: str):
     """Process a new document detected by the folder watcher."""
+    document_id = None
     try:
         # Extract text using OCR
         text = await ocr_processor.process_document(file_path)
@@ -474,9 +484,11 @@ async def process_new_document(file_path: str):
                     return
 
                 def _to_str(val):
-                    """Return a safe string representation for DB columns."""
+                    """Convert value to string, handling various input types."""
                     if val is None:
-                        return ""
+                        return None
+                    if isinstance(val, str):
+                        return val.strip() if val.strip() else None
                     if isinstance(val, (dict, list)):
                         try:
                             import json
@@ -485,320 +497,522 @@ async def process_new_document(file_path: str):
                             return str(val)
                     return str(val)
 
+                def _validate_and_convert_date_global(date_str: str) -> str | None:
+                    """
+                    Global date validation and conversion to ISO format (YYYY-MM-DD).
+                    Handles European (DD.MM.YYYY) and American (MM/DD/YYYY) formats.
+                    Returns None if date cannot be parsed.
+                    """
+                    if not date_str or not isinstance(date_str, str):
+                        return None
+                    
+                    date_str = date_str.strip()
+                    if not date_str:
+                        return None
+                    
+                    from datetime import datetime
+                    
+                    # Try ISO format first (already correct)
+                    try:
+                        dt = datetime.fromisoformat(date_str)
+                        return dt.strftime('%Y-%m-%d')
+                    except:
+                        pass
+                    
+                    # Try European format (DD.MM.YYYY)
+                    try:
+                        if '.' in date_str:
+                            parts = date_str.split('.')
+                            if len(parts) == 3:
+                                day, month, year = parts
+                                dt = datetime(int(year), int(month), int(day))
+                                logger.info(f"Converted European date {date_str} -> {dt.strftime('%Y-%m-%d')}")
+                                return dt.strftime('%Y-%m-%d')
+                    except:
+                        pass
+                    
+                    # Try American format (MM/DD/YYYY)
+                    try:
+                        if '/' in date_str:
+                            parts = date_str.split('/')
+                            if len(parts) == 3:
+                                month, day, year = parts
+                                dt = datetime(int(year), int(month), int(day))
+                                logger.info(f"Converted American date {date_str} -> {dt.strftime('%Y-%m-%d')}")
+                                return dt.strftime('%Y-%m-%d')
+                    except:
+                        pass
+                    
+                    # Try other common formats
+                    formats_to_try = [
+                        '%Y-%m-%d',  # ISO (shouldn't reach here but just in case)
+                        '%d-%m-%Y',  # DD-MM-YYYY
+                        '%m-%d-%Y',  # MM-DD-YYYY
+                        '%d/%m/%Y',  # DD/MM/YYYY
+                        '%Y/%m/%d',  # YYYY/MM/DD
+                    ]
+                    
+                    for fmt in formats_to_try:
+                        try:
+                            dt = datetime.strptime(date_str, fmt)
+                            converted = dt.strftime('%Y-%m-%d')
+                            logger.info(f"Converted date {date_str} ({fmt}) -> {converted}")
+                            return converted
+                        except:
+                            continue
+                    
+                    logger.warning(f"Could not parse date: {date_str}")
+                    return None
+
+                def _extract_sender_name(sender_data):
+                    """Extract clean company name from sender data."""
+                    if sender_data is None:
+                        return ""
+                    
+                    # If it's already a string, return it
+                    if isinstance(sender_data, str):
+                        return sender_data.strip()
+                    
+                    # If it's a dict, try to extract the name field
+                    if isinstance(sender_data, dict):
+                        # Try common name fields
+                        for name_field in ['name', 'company', 'sender', 'company_name']:
+                            if name_field in sender_data and sender_data[name_field]:
+                                return str(sender_data[name_field]).strip()
+                        
+                        # If no name field found, return the first non-empty string value
+                        for key, value in sender_data.items():
+                            if isinstance(value, str) and value.strip():
+                                return value.strip()
+                    
+                    # Fallback to string conversion
+                    return str(sender_data).strip()
+
+                # Create document with "processing" status initially
                 document = Document(
-                    title=_to_str(metadata.get("title", os.path.basename(file_path))),
+                    title=_to_str(metadata.get("title", os.path.basename(file_path))) or os.path.basename(file_path).replace('.pdf', '').replace('_', ' '),
                     file_path=file_path,
                     content=text,
                     document_type=_to_str((lambda dt: dt.lower() if isinstance(dt,str) else dt)(metadata.get("document_type", "unknown"))),
-                    sender=_to_str(metadata.get("sender", "")),
+                    sender=_extract_sender_name(metadata.get("sender", "")),
                     recipient=_to_str(metadata.get("recipient", "")),
-                    document_date=_to_str(metadata.get("document_date")),
-                    due_date=_to_str(metadata.get("due_date")),
+                    document_date=_validate_and_convert_date_global(metadata.get("document_date")),
+                    due_date=_validate_and_convert_date_global(metadata.get("due_date")),
                     amount=_normalize_amount(metadata.get("amount")),
                     subtotal=_normalize_amount(metadata.get("subtotal")),
                     tax_rate=_normalize_amount(metadata.get("tax_rate")),
                     tax_amount=_normalize_amount(metadata.get("tax_amount")),
                     currency=_to_str(metadata.get("currency", settings.DEFAULT_CURRENCY)),
-                    status=_to_str(metadata.get("status", "pending")),
+                    status="processing",  # Set to processing initially
                     hash=file_hash,
                 )
                 
-                # ------------------------------------------------------------------
-                #  If VAT not explicitly returned, derive from subtotal vs total
-                # ------------------------------------------------------------------
-                if (
-                    document.tax_amount is None
-                    and document.amount is not None
-                    and document.subtotal is not None
-                ):
-                    try:
-                        document.tax_amount = round(document.amount - document.subtotal, 2)
-                    except Exception:
-                        pass
+                # Ensure title is never null
+                if not document.title or document.title.strip() == "":
+                    document.title = os.path.basename(file_path).replace('.pdf', '').replace('_', ' ')
                 
-                # Add tags
-                if "tags" in metadata and isinstance(metadata["tags"], list):
-                    for tag_name in metadata["tags"]:
-                        # Normalise
-                        tag_name = str(tag_name).strip()
-                        if not tag_name:
-                            continue
-                        # Check if tag already exists (case-insensitive)
-                        existing_tag_res = await session.execute(
-                            select(Tag).filter(Tag.name.ilike(tag_name))
-                        )
-                        existing_tag = existing_tag_res.scalars().first()
-                        if existing_tag:
-                            document.tags.append(existing_tag)
-                        else:
-                            new_tag = Tag(name=tag_name)
-                            session.add(new_tag)
-                            await session.flush()
-                            document.tags.append(new_tag)
+                # Persist DB row early so we have an ID for vector mapping and dashboard display
+                await document_repository.create(session, document)
+                document_id = document.id
+                logger.info(f"Document created with processing status: {document.title} (ID: {document_id})")
                 
-                # ------------------------------------------------------------------
-                #  Auto-tag with year / month (for easier filter)
-                # ------------------------------------------------------------------
-
-                def _extract_date_year_month() -> tuple[str | None, str | None]:
-                    for key in (metadata.get("document_date"), metadata.get("due_date")):
-                        if key:
+                # Commit immediately so the processing status is visible in dashboard
+                await session.commit()
+                
+                # Add a longer delay to make the processing status visible in the dashboard
+                await asyncio.sleep(5)
+                
+                # Continue with processing in a new transaction
+                try:
+                    async with session.begin():
+                        # Refresh the document object for the new transaction
+                        document = await session.get(Document, document_id)
+                        if not document:
+                            logger.error(f"Document {document_id} not found in new transaction")
+                            return
+                        
+                        # ------------------------------------------------------------------
+                        #  If VAT not explicitly returned, derive from subtotal vs total
+                        # ------------------------------------------------------------------
+                        if (
+                            document.tax_amount is None
+                            and document.amount is not None
+                            and document.subtotal is not None
+                        ):
                             try:
-                                from datetime import datetime
-                                dt = datetime.fromisoformat(str(key)[:10])
-                                return str(dt.year), f"{dt.year}-{dt.month:02d}"
+                                document.tax_amount = round(document.amount - document.subtotal, 2)
                             except Exception:
                                 pass
-                    # Fallback: created_at (now)
-                    from datetime import datetime
-                    dt = datetime.utcnow()
-                    return str(dt.year), f"{dt.year}-{dt.month:02d}"
+                        
+                        # Add tags
+                        if "tags" in metadata and isinstance(metadata["tags"], list):
+                            for tag_name in metadata["tags"]:
+                                # Normalise
+                                tag_name = str(tag_name).strip()
+                                if not tag_name:
+                                    continue
+                                # Check if tag already exists (case-insensitive)
+                                existing_tag_res = await session.execute(
+                                    select(Tag).filter(Tag.name.ilike(tag_name))
+                                )
+                                existing_tag = existing_tag_res.scalars().first()
+                                if existing_tag:
+                                    document.tags.append(existing_tag)
+                                else:
+                                    new_tag = Tag(name=tag_name)
+                                    session.add(new_tag)
+                                    await session.flush()
+                                    document.tags.append(new_tag)
+                        
+                        # ------------------------------------------------------------------
+                        #  Auto-tag with year / month (for easier filter)
+                        # ------------------------------------------------------------------
 
-                _year, _ym = _extract_date_year_month()
+                        def _extract_date_year_month() -> tuple[str | None, str | None]:
+                            for key in (metadata.get("document_date"), metadata.get("due_date")):
+                                if key:
+                                    try:
+                                        from datetime import datetime
+                                        dt = datetime.fromisoformat(str(key)[:10])
+                                        return str(dt.year), f"{dt.year}-{dt.month:02d}"
+                                    except Exception:
+                                        pass
+                            # Fallback: created_at (now)
+                            from datetime import datetime
+                            dt = datetime.utcnow()
+                            return str(dt.year), f"{dt.year}-{dt.month:02d}"
 
-                for auto_tag in [f"year-{_year}" if _year else None, f"month-{_ym}" if _ym else None]:
-                    if not auto_tag:
-                        continue
-                    existing_tag_res = await session.execute(select(Tag).filter(Tag.name == auto_tag))
-                    existing_tag = existing_tag_res.scalars().first()
-                    if existing_tag:
-                        document.tags.append(existing_tag)
-                    else:
-                        nt = Tag(name=auto_tag)
-                        session.add(nt)
-                        await session.flush()
-                        document.tags.append(nt)
-                
-                # ------------------------------------------------------------------
-                # Infer document_type if still unknown --------------------------------
-                # ------------------------------------------------------------------
+                        _year, _ym = _extract_date_year_month()
 
-                if document.document_type in ("unknown", "", None):
-                    lowered = text.lower()
-
-                    def _looks_like_invoice() -> bool:
-                        if document.due_date or document.tax_amount is not None:
-                            return True
-                        if any(k in lowered for k in ("invoice", "rechnung", "facture", "fattura")):
-                            return True
-                        return False
-
-                    if _looks_like_invoice():
-                        document.document_type = "invoice"
-                    elif any(k in lowered for k in ("tax", "steuer", "mwst", "vat")):
-                        document.document_type = "tax"
-                    else:
-                        document.document_type = "document"
-
-                # Persist DB row early so we have an ID for vector mapping
-                await document_repository.create(session, document)
-
-                # --------------------------------------------------------------
-                #  Vision embeddings (ColPali) – insert per page into Qdrant
-                # --------------------------------------------------------------
-
-                try:
-                    embedder = ColPaliEmbedder()
-
-                    images: list[Image.Image] = []
-                    ext = os.path.splitext(file_path)[1].lower()
-
-                    if ext == ".pdf":
-                        # Reuse PDF->PIL conversion; low dpi to save mem (processor will resize)
-                        images = await asyncio.to_thread(convert_from_path, file_path, dpi=240)
-                    elif ext in {".jpg", ".jpeg", ".png", ".tiff", ".tif"}:
-                        img = await asyncio.to_thread(Image.open, file_path)
-                        images = [img]
-
-                    # Iterate pages – embed & upsert
-                    for page_idx, pil_img in enumerate(images):
-                        multi_vecs, _ = embedder.embed_page(pil_img)
-
-                        vector_ids = upsert_page(document.id, page_idx, multi_vecs)
-
-                        ve = VectorEntry(
-                            doc_id=document.id,
-                            page=page_idx,
-                            vector_ids=json.dumps(vector_ids, ensure_ascii=False),
-                        )
-                        session.add(ve)
-
-                except Exception as exc:
-                    logger.warning("ColPali embedding failed: %s", exc)
-                
-                # Compute *text* embedding (async) and persist for legacy search
-                try:
-                    from app.embeddings import get_embedding
-                    emb = await get_embedding(text[:2048])  # limit tokens
-                    # Convert to pgvector input format (list of floats) – SQLAlchemy will adapt
-                    document.embedding = emb  # type: ignore[attr-defined]
-                except Exception as e:
-                    logger.warning("Embedding generation failed: %s", e)
-                
-                # Create notification if due date is present
-                if document.due_date:
-                    await notification_service.create_due_date_notification(session, document)
-                
-                logger.info(f"Document processed and saved: {document.title}")
-
-                # ------------------------------------------------------------------
-                #  Auto-enrich Address-Book with vendor / sender details
-                # ------------------------------------------------------------------
-
-                vendor_name = _to_str(metadata.get("sender", "")).strip()
-
-                vendor_entry: AddressEntry | None = None  # initialise to satisfy later reference
-
-                # ------------------------------------------------------------------
-                #  Helper – canonical representation of company names to avoid dupes
-                # ------------------------------------------------------------------
-
-                _LEGAL_SUFFIX_RE = re.compile(r"\b(ag|gmbh|sa|sarl|inc|ltd)\b\.?", re.I)
-
-                def _canonical_name(name: str) -> str:
-                    name = _LEGAL_SUFFIX_RE.sub("", name.lower())
-                    return re.sub(r"[^a-z0-9]", "", name)
-
-                # ------------------------------------------------------------------
-                # 1) Canonical match (after stripping legal suffix & punctuation)
-                # ------------------------------------------------------------------
-                canon = _canonical_name(vendor_name)
-
-                all_entries = (await session.execute(select(AddressEntry))).scalars().all()
-
-                for entry in all_entries:
-                    if _canonical_name(entry.name) == canon:
-                        vendor_entry = entry
-                        break
-
-                # ------------------------------------------------------------------
-                # 2) Fuzzy fallback – token-overlap + edit-distance (robust to typos)
-                #    We purposely allow a lower similarity threshold (≥ 0.7) so that
-                #    variants like "Visana Service AG" / "Visa naa AG" / "Visana" map
-                #    to the same company. This greatly reduces duplicates caused by
-                #    OCR misreads.
-                # ------------------------------------------------------------------
-
-                def _tokenize(n: str) -> set[str]:
-                    n = _LEGAL_SUFFIX_RE.sub("", n.lower())
-                    tokens = re.split(r"[^a-z0-9]+", n)
-                    return {t for t in tokens if t}
-
-                def _token_overlap(a: str, b: str) -> float:
-                    ta, tb = _tokenize(a), _tokenize(b)
-                    if not ta or not tb:
-                        return 0.0
-                    common = ta & tb
-                    return len(common) / max(len(ta), len(tb))
-
-                if vendor_entry is None:
-                    best_score = 0.0
-                    for entry in all_entries:
-                        overlap = _token_overlap(entry.name, vendor_name)
-                        # Combine with SequenceMatcher ratio for fine-grained score
-                        ed_ratio = SequenceMatcher(None, _canonical_name(entry.name), canon).ratio()
-                        score = max(overlap, ed_ratio)
-                        if score >= 0.7 and score > best_score:
-                            vendor_entry = entry
-                            best_score = score
-
-                # 3) Merge duplicates (same canonical but different rows)
-                if vendor_entry is not None:
-                    dupes = [
-                        e
-                        for e in all_entries
-                        if e.id != vendor_entry.id
-                        and (
-                            _canonical_name(e.name) == canon
-                            or _token_overlap(e.name, vendor_entry.name) >= 0.7
-                        )
-                    ]
-
-                    for d in dupes:
-                        # Copy non-empty fields from dupe to canonical record
-                        for col in (
-                            "email",
-                            "phone",
-                            "street",
-                            "address2",
-                            "town",
-                            "zip",
-                            "county",
-                            "country",
-                            "vat_id",
-                            "tags",
-                            "group_name",
-                        ):
-                            if getattr(vendor_entry, col) in (None, "") and (
-                                val := getattr(d, col)
-                            ):
-                                setattr(vendor_entry, col, val)
-
-                        # Keep the latest transaction date
-                        try:
-                            if (d.last_transaction or "") > (vendor_entry.last_transaction or ""):
-                                vendor_entry.last_transaction = d.last_transaction
-                        except Exception:
-                            pass
-
-                        await session.delete(d)
-
-                entry_data: dict[str, str | None] = {}
-                # Map common metadata keys → AddressEntry columns
-                field_map = {
-                    "street": "street",
-                    "address2": "address2",
-                    "town": "town",
-                    "zip": "zip",
-                    "county": "county",
-                    "country": "country",
-                    "sender_email": "email",
-                    "email": "email",
-                    "phone": "phone",
-                    "vat_id": "vat_id",
-                }
-
-                for meta_key, col in field_map.items():
-                    val = metadata.get(meta_key)
-                    if val is not None:
-                        # Workaround: if column still limited to 2 chars (legacy schema) truncate overly long country strings.
-                        if col == "country":
-                            val_str = _to_str(val)
-                            if len(val_str) > 100:
-                                val_str = val_str[:100]
-                            # If previous schema is still VARCHAR(2) we at least store ISO code
-                            if len(val_str) > 2:
-                                iso = val_str[:2].upper()
-                                entry_data[col] = iso
+                        for auto_tag in [f"year-{_year}" if _year else None, f"month-{_ym}" if _ym else None]:
+                            if not auto_tag:
+                                continue
+                            existing_tag_res = await session.execute(select(Tag).filter(Tag.name == auto_tag))
+                            existing_tag = existing_tag_res.scalars().first()
+                            if existing_tag:
+                                document.tags.append(existing_tag)
                             else:
-                                entry_data[col] = val_str
+                                nt = Tag(name=auto_tag)
+                                session.add(nt)
+                                await session.flush()
+                                document.tags.append(nt)
+                        
+                        # ------------------------------------------------------------------
+                        # Infer document_type if still unknown --------------------------------
+                        # ------------------------------------------------------------------
+
+                        if document.document_type in ("unknown", "", None):
+                            lowered = text.lower()
+
+                            def _looks_like_invoice() -> bool:
+                                if document.due_date or document.tax_amount is not None:
+                                    return True
+                                if any(k in lowered for k in ("invoice", "rechnung", "facture", "fattura")):
+                                    return True
+                                return False
+
+                            if _looks_like_invoice():
+                                document.document_type = "invoice"
+                            elif any(k in lowered for k in ("tax", "steuer", "mwst", "vat")):
+                                document.document_type = "tax"
+                            else:
+                                document.document_type = "document"
+
+                        # --------------------------------------------------------------
+                        #  Vision embeddings (ColPali) – insert per page into Qdrant
+                        # --------------------------------------------------------------
+
+                        try:
+                            embedder = ColPaliEmbedder()
+
+                            images: list[Image.Image] = []
+                            ext = os.path.splitext(file_path)[1].lower()
+
+                            if ext == ".pdf":
+                                # Reuse PDF->PIL conversion; low dpi to save mem (processor will resize)
+                                images = await asyncio.to_thread(convert_from_path, file_path, dpi=240)
+                            elif ext in {".jpg", ".jpeg", ".png", ".tiff", ".tif"}:
+                                img = await asyncio.to_thread(Image.open, file_path)
+                                images = [img]
+
+                            # Iterate pages – embed & upsert
+                            for page_idx, pil_img in enumerate(images):
+                                multi_vecs, _ = embedder.embed_page(pil_img)
+
+                                vector_ids = upsert_page(document.id, page_idx, multi_vecs)
+
+                                ve = VectorEntry(
+                                    doc_id=document.id,
+                                    page=page_idx,
+                                    vector_ids=json.dumps(vector_ids, ensure_ascii=False),
+                                )
+                                session.add(ve)
+
+                        except Exception as exc:
+                            logger.warning("ColPali embedding failed: %s", exc)
+                        
+                        # Compute *text* embedding (async) and persist for legacy search
+                        try:
+                            from app.embeddings import get_embedding
+                            emb = await get_embedding(text[:2048])  # limit tokens
+                            # Convert to pgvector input format (list of floats) – SQLAlchemy will adapt
+                            document.embedding = emb  # type: ignore[attr-defined]
+                        except Exception as e:
+                            logger.warning("Embedding generation failed: %s", e)
+                        
+                        # Create notification if due date is present
+                        if document.due_date:
+                            await notification_service.create_due_date_notification(session, document)
+
+                        # ------------------------------------------------------------------
+                        #  Auto-enrich Address-Book with vendor / sender details
+                        # ------------------------------------------------------------------
+
+                        vendor_name = _extract_sender_name(metadata.get("sender", "")).strip()
+
+                        vendor_entry: AddressEntry | None = None  # initialise to satisfy later reference
+
+                        # ------------------------------------------------------------------
+                        #  Helper – canonical representation of company names to avoid dupes
+                        # ------------------------------------------------------------------
+
+                        _LEGAL_SUFFIX_RE = re.compile(r"\b(ag|gmbh|sa|sarl|inc|ltd)\b\.?", re.I)
+
+                        def _canonical_name(name: str) -> str:
+                            name = _LEGAL_SUFFIX_RE.sub("", name.lower())
+                            return re.sub(r"[^a-z0-9]", "", name)
+
+                        # ------------------------------------------------------------------
+                        # 1) Canonical match (after stripping legal suffix & punctuation)
+                        # ------------------------------------------------------------------
+                        canon = _canonical_name(vendor_name)
+
+                        all_entries = (await session.execute(select(AddressEntry))).scalars().all()
+
+                        for entry in all_entries:
+                            if _canonical_name(entry.name) == canon:
+                                vendor_entry = entry
+                                break
+
+                        # ------------------------------------------------------------------
+                        # 2) Fuzzy fallback – token-overlap + edit-distance (robust to typos)
+                        #    We purposely allow a lower similarity threshold (≥ 0.7) so that
+                        #    variants like "Visana Service AG" / "Visa naa AG" / "Visana" map
+                        #    to the same company. This greatly reduces duplicates caused by
+                        #    OCR misreads.
+                        # ------------------------------------------------------------------
+
+                        def _tokenize(n: str) -> set[str]:
+                            n = _LEGAL_SUFFIX_RE.sub("", n.lower())
+                            tokens = re.split(r"[^a-z0-9]+", n)
+                            return {t for t in tokens if t}
+
+                        def _token_overlap(a: str, b: str) -> float:
+                            ta, tb = _tokenize(a), _tokenize(b)
+                            if not ta or not tb:
+                                return 0.0
+                            common = ta & tb
+                            return len(common) / max(len(ta), len(tb))
+
+                        if vendor_entry is None:
+                            best_score = 0.0
+                            for entry in all_entries:
+                                overlap = _token_overlap(entry.name, vendor_name)
+                                # Combine with SequenceMatcher ratio for fine-grained score
+                                ed_ratio = SequenceMatcher(None, _canonical_name(entry.name), canon).ratio()
+                                score = max(overlap, ed_ratio)
+                                if score >= 0.7 and score > best_score:
+                                    vendor_entry = entry
+                                    best_score = score
+
+                        # 3) Merge duplicates (same canonical but different rows)
+                        if vendor_entry is not None:
+                            dupes = [
+                                e
+                                for e in all_entries
+                                if e.id != vendor_entry.id
+                                and (
+                                    _canonical_name(e.name) == canon
+                                    or _token_overlap(e.name, vendor_entry.name) >= 0.7
+                                )
+                            ]
+
+                            for d in dupes:
+                                # Copy non-empty fields from dupe to canonical record
+                                for col in (
+                                    "email",
+                                    "phone",
+                                    "street",
+                                    "address2",
+                                    "town",
+                                    "zip",
+                                    "county",
+                                    "country",
+                                    "vat_id",
+                                    "tags",
+                                    "group_name",
+                                ):
+                                    if getattr(vendor_entry, col) in (None, "") and (
+                                        val := getattr(d, col)
+                                    ):
+                                        setattr(vendor_entry, col, val)
+
+                                # Keep the latest transaction date
+                                try:
+                                    if (d.last_transaction or "") > (vendor_entry.last_transaction or ""):
+                                        vendor_entry.last_transaction = d.last_transaction
+                                except Exception:
+                                    pass
+
+                                await session.delete(d)
+
+                        entry_data: dict[str, str | None] = {}
+                        # Map common metadata keys → AddressEntry columns
+                        field_map = {
+                            "street": "street",
+                            "address2": "address2",
+                            "town": "town",
+                            "zip": "zip",
+                            "county": "county",
+                            "country": "country",
+                            "sender_email": "email",
+                            "email": "email",
+                            "phone": "phone",
+                            "vat_id": "vat_id",
+                        }
+
+                        for meta_key, col in field_map.items():
+                            val = metadata.get(meta_key)
+                            if val is not None:
+                                # Workaround: if column still limited to 2 chars (legacy schema) truncate overly long country strings.
+                                if col == "country":
+                                    val_str = _to_str(val)
+                                    if len(val_str) > 100:
+                                        val_str = val_str[:100]
+                                        # If previous schema is still VARCHAR(2) we at least store ISO code
+                                        if len(val_str) > 2:
+                                            iso = val_str[:2].upper()
+                                            entry_data[col] = iso
+                                        else:
+                                            entry_data[col] = val_str
+                                else:
+                                    entry_data[col] = _to_str(val)
+
+                        # Always update last_transaction to latest invoice date or today
+                        entry_data["last_transaction"] = document.document_date or document.created_at.isoformat()
+
+                        if vendor_entry is None:
+                            # Create new record
+                            vendor_entry = AddressEntry(name=vendor_name, entity_type="company", **entry_data)
+                            session.add(vendor_entry)
                         else:
-                            entry_data[col] = _to_str(val)
+                            # Patch empty fields to keep data fresh
+                            for col, val in entry_data.items():
+                                if getattr(vendor_entry, col) in (None, "") and val:
+                                    setattr(vendor_entry, col, val)
 
-                # Always update last_transaction to latest invoice date or today
-                entry_data["last_transaction"] = document.document_date or document.created_at.isoformat()
+                        # Ensure the document's sender reflects the canonicalised vendor name
+                        if vendor_entry is not None and vendor_entry.name:
+                            document.sender = vendor_entry.name
 
-                if vendor_entry is None:
-                    # Create new record
-                    vendor_entry = AddressEntry(name=vendor_name, entity_type="company", **entry_data)
-                    session.add(vendor_entry)
-                else:
-                    # Patch empty fields to keep data fresh
-                    for col, val in entry_data.items():
-                        if getattr(vendor_entry, col) in (None, "") and val:
-                            setattr(vendor_entry, col, val)
+                        await session.flush()
 
-                # Ensure the document's sender reflects the canonicalised vendor name
-                if vendor_entry is not None and vendor_entry.name:
-                    document.sender = vendor_entry.name
+                        logger.info(f"Address entry processed and saved: {vendor_entry.name}")
 
-                await session.flush()
+                        # ------------------------------------------------------------------
+                        # Mark document as completed after successful processing
+                        # ------------------------------------------------------------------
+                        final_status = _to_str(metadata.get("status", "pending"))
+                        if final_status == "processing":  # Don't override if LLM provided a specific status
+                            final_status = "pending"
+                        
+                        document.status = final_status
+                        await session.flush()
+                        
+                        logger.info(f"Document processing completed: {document.title} (ID: {document_id}) - Status: {final_status}")
 
-                logger.info(f"Address entry processed and saved: {vendor_entry.name}")
+                        # ------------------------------------------------------------------
+                        # Auto-extract and assign tenant (enhanced automation)
+                        # ------------------------------------------------------------------
+                        try:
+                            from app.agents.tenant_agent import TenantExtractionAgent
+                            
+                            # Enhanced user detection: try to find the user who owns the document
+                            # Look for a default user first, then fallback to admin
+                            async def get_processing_user_id():
+                                # Try to find a user marked as default processor
+                                from app.models import User
+                                result = await session.execute(
+                                    select(User).where(User.disabled == False).order_by(User.id)
+                                )
+                                users = result.scalars().all()
+                                
+                                if users:
+                                    # Use first active user (could be enhanced with more logic)
+                                    return users[0].id
+                                
+                                # Fallback: assume user ID 1 exists
+                                return 1
+                            
+                            processing_user_id = await get_processing_user_id()
+                            
+                            tenant_agent = TenantExtractionAgent(session)
+                            tenant_result = await tenant_agent.analyze_and_assign_tenant(document_id, processing_user_id)
+                            
+                            if tenant_result.get("status") == "success" and tenant_result.get("tenant"):
+                                logger.info(f"Auto-assigned document {document_id} to tenant: {tenant_result['tenant']['alias']}")
+                            elif tenant_result.get("status") == "no_match":
+                                logger.info(f"No tenant match found for document {document_id}, keeping original recipient: {document.recipient}")
+                            else:
+                                logger.info(f"Tenant auto-assignment skipped for document {document_id}: {tenant_result['message']}")
+                                
+                        except Exception as tenant_error:
+                            logger.warning(f"Tenant extraction failed for document {document_id}: {tenant_error}")
+                            # Don't fail the entire process if tenant extraction fails
+                        
+                        # ------------------------------------------------------------------
+                        # Mark document as successfully processed
+                        # ------------------------------------------------------------------
+                        document.status = "processed" 
+                        await session.flush()
+                        logger.info(f"Document successfully processed: {document.title} (ID: {document_id})")
+                        
+                except Exception as inner_error:
+                    logger.error(f"Error in processing transaction for {file_path}: {str(inner_error)}")
+                    # Mark as failed in a separate transaction
+                    try:
+                        from sqlalchemy.ext.asyncio import AsyncSession
+                        from app.database import engine as _eng
+                        async with AsyncSession(_eng) as fail_session:
+                            async with fail_session.begin():
+                                failed_doc = await fail_session.execute(select(Document).filter(Document.id == document_id))
+                                doc = failed_doc.scalars().first()
+                                if doc:
+                                    doc.status = "failed"
+                                    await fail_session.flush()
+                                    logger.info(f"Document marked as failed: {doc.title} (ID: {document_id})")
+                    except Exception as update_error:
+                        logger.error(f"Failed to update document status to failed: {update_error}")
 
                 # ------------------------------------------------------------------
     except Exception as e:
         logger.error(f"Error processing document {file_path}: {str(e)}")
+        
+        # Mark document as failed if we have a document_id
+        if document_id:
+            try:
+                from sqlalchemy.ext.asyncio import AsyncSession
+                from app.database import engine as _eng
+                async with AsyncSession(_eng) as session:
+                    async with session.begin():
+                        failed_doc = await session.execute(select(Document).filter(Document.id == document_id))
+                        doc = failed_doc.scalars().first()
+                        if doc:
+                            doc.status = "failed"
+                            await session.flush()
+                            logger.info(f"Document marked as failed: {doc.title} (ID: {document_id})")
+            except Exception as update_error:
+                logger.error(f"Failed to update document status to failed: {update_error}")
 
 # Utility – safely convert various LLM outputs to a float
 def _normalize_amount(value):
@@ -840,6 +1054,73 @@ def _normalize_amount(value):
             return float(cleaned)
         except ValueError:
             return None
+    return None
+
+def _validate_and_convert_date_global(date_str: str) -> str | None:
+    """
+    Global date validation and conversion to ISO format (YYYY-MM-DD).
+    Handles European (DD.MM.YYYY) and American (MM/DD/YYYY) formats.
+    Returns None if date cannot be parsed.
+    """
+    if not date_str or not isinstance(date_str, str):
+        return None
+    
+    date_str = date_str.strip()
+    if not date_str:
+        return None
+    
+    from datetime import datetime
+    
+    # Try ISO format first (already correct)
+    try:
+        dt = datetime.fromisoformat(date_str)
+        return dt.strftime('%Y-%m-%d')
+    except:
+        pass
+    
+    # Try European format (DD.MM.YYYY)
+    try:
+        if '.' in date_str:
+            parts = date_str.split('.')
+            if len(parts) == 3:
+                day, month, year = parts
+                dt = datetime(int(year), int(month), int(day))
+                logger.info(f"Converted European date {date_str} -> {dt.strftime('%Y-%m-%d')}")
+                return dt.strftime('%Y-%m-%d')
+    except:
+        pass
+    
+    # Try American format (MM/DD/YYYY)
+    try:
+        if '/' in date_str:
+            parts = date_str.split('/')
+            if len(parts) == 3:
+                month, day, year = parts
+                dt = datetime(int(year), int(month), int(day))
+                logger.info(f"Converted American date {date_str} -> {dt.strftime('%Y-%m-%d')}")
+                return dt.strftime('%Y-%m-%d')
+    except:
+        pass
+    
+    # Try other common formats
+    formats_to_try = [
+        '%Y-%m-%d',  # ISO (shouldn't reach here but just in case)
+        '%d-%m-%Y',  # DD-MM-YYYY
+        '%m-%d-%Y',  # MM-DD-YYYY
+        '%d/%m/%Y',  # DD/MM/YYYY
+        '%Y/%m/%d',  # YYYY/MM/DD
+    ]
+    
+    for fmt in formats_to_try:
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            converted = dt.strftime('%Y-%m-%d')
+            logger.info(f"Converted date {date_str} ({fmt}) -> {converted}")
+            return converted
+        except:
+            continue
+    
+    logger.warning(f"Could not parse date: {date_str}")
     return None
 
 # Authentication routes
@@ -970,9 +1251,9 @@ async def update_document(
     if recipient:
         document.recipient = recipient
     if document_date:
-        document.document_date = document_date
+        document.document_date = _validate_and_convert_date_global(document_date)
     if due_date:
-        document.due_date = due_date
+        document.due_date = _validate_and_convert_date_global(due_date)
     if amount is not None:
         document.amount = amount
     if currency:
@@ -1443,6 +1724,201 @@ async def vision_search(
     results = await search_service.vision_search(query)
     return results
 
+# ---------------------------------------------------------------------------
+# Vendor Analytics routes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/vendors/{vendor_name}/analytics")
+async def get_vendor_analytics(
+    vendor_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get comprehensive analytics for a specific vendor."""
+    from collections import defaultdict
+    import calendar
+    
+    # Get all documents for this vendor
+    result = await db.execute(
+        select(Document).where(
+            Document.sender.ilike(f"%{vendor_name}%")
+        ).order_by(Document.document_date.desc())
+    )
+    documents = result.scalars().all()
+    
+    if not documents:
+        raise HTTPException(status_code=404, detail="No documents found for this vendor")
+    
+    # Convert to dictionaries for easier processing
+    invoices = []
+    for doc in documents:
+        invoice_data = DocumentRepository._to_dict(doc)
+        invoices.append(invoice_data)
+    
+    # Analyze invoice patterns
+    current_year = datetime.now().year
+    yearly_totals = defaultdict(float)
+    yearly_vat = defaultdict(float)
+    yearly_counts = defaultdict(int)
+    monthly_pattern = defaultdict(list)  # year-month -> [invoices]
+    
+    # Process each invoice
+    for invoice in invoices:
+        doc_date = invoice.get('document_date')
+        amount = invoice.get('amount') or 0
+        vat_amount = invoice.get('tax_amount') or 0
+        
+        if doc_date:
+            try:
+                if isinstance(doc_date, str):
+                    # Try different date formats
+                    date_obj = None
+                    for fmt in ['%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f']:
+                        try:
+                            date_obj = datetime.strptime(doc_date.replace('Z', '').replace('+00:00', ''), fmt)
+                            break
+                        except ValueError:
+                            continue
+                    
+                    if date_obj is None:
+                        # Try fromisoformat as fallback
+                        date_obj = datetime.fromisoformat(doc_date.replace('Z', '+00:00'))
+                else:
+                    date_obj = doc_date
+                
+                year = date_obj.year
+                month = date_obj.month
+                
+                yearly_totals[year] += amount
+                yearly_vat[year] += vat_amount
+                yearly_counts[year] += 1
+                monthly_pattern[f"{year}-{month:02d}"].append(invoice)
+                
+            except (ValueError, TypeError):
+                continue
+    
+    # Detect missing invoices (simple heuristic: if we have invoices in consecutive months, flag missing months)
+    missing_periods = []
+    if len(monthly_pattern) >= 3:  # Need at least 3 invoices to detect pattern
+        # Get all year-month keys and sort them
+        periods = sorted(monthly_pattern.keys())
+        
+        # Check for gaps in monthly pattern for the last 2 years
+        start_date = datetime(current_year - 1, 1, 1)
+        end_date = datetime(current_year, 12, 31)
+        
+        current_date = start_date
+        while current_date <= end_date:
+            period_key = f"{current_date.year}-{current_date.month:02d}"
+            
+            # If this period is missing and we have invoices before and after
+            if period_key not in monthly_pattern:
+                # Check if we have invoices in surrounding months
+                prev_month = current_date - timedelta(days=32)
+                next_month = current_date + timedelta(days=32)
+                prev_key = f"{prev_month.year}-{prev_month.month:02d}"
+                next_key = f"{next_month.year}-{next_month.month:02d}"
+                
+                if prev_key in monthly_pattern and next_key in monthly_pattern:
+                    missing_periods.append({
+                        "period": period_key,
+                        "month_name": calendar.month_name[current_date.month],
+                        "year": current_date.year
+                    })
+            
+            # Move to next month
+            if current_date.month == 12:
+                current_date = current_date.replace(year=current_date.year + 1, month=1)
+            else:
+                current_date = current_date.replace(month=current_date.month + 1)
+    
+    # Calculate frequency pattern
+    frequency_analysis = "unknown"
+    if len(monthly_pattern) >= 6:
+        # Count how many months have invoices vs total months spanned
+        periods = sorted(monthly_pattern.keys())
+        if periods:
+            start_period = periods[0]
+            end_period = periods[-1]
+            start_year, start_month = map(int, start_period.split('-'))
+            end_year, end_month = map(int, end_period.split('-'))
+            
+            total_months = (end_year - start_year) * 12 + (end_month - start_month) + 1
+            months_with_invoices = len(monthly_pattern)
+            
+            coverage_ratio = months_with_invoices / total_months
+            
+            if coverage_ratio >= 0.9:
+                frequency_analysis = "monthly"
+            elif coverage_ratio >= 0.7:
+                frequency_analysis = "mostly_monthly"
+            elif coverage_ratio >= 0.25:
+                frequency_analysis = "quarterly"
+            else:
+                frequency_analysis = "irregular"
+    
+    # Prepare yearly breakdown for charts
+    yearly_breakdown = []
+    for year in sorted(yearly_totals.keys(), reverse=True):
+        yearly_breakdown.append({
+            "year": year,
+            "total_amount": round(yearly_totals[year], 2),
+            "total_vat": round(yearly_vat[year], 2),
+            "invoice_count": yearly_counts[year],
+            "average_amount": round(yearly_totals[year] / yearly_counts[year], 2) if yearly_counts[year] > 0 else 0
+        })
+    
+    # Calculate totals
+    total_amount = sum(yearly_totals.values())
+    total_vat = sum(yearly_vat.values())
+    total_invoices = len(invoices)
+    
+    # Recent activity (last 12 months)
+    twelve_months_ago = datetime.now() - timedelta(days=365)
+    recent_invoices = []
+    
+    for inv in invoices:
+        doc_date = inv.get('document_date')
+        if doc_date:
+            try:
+                if isinstance(doc_date, str):
+                    # Try different date formats
+                    date_obj = None
+                    for fmt in ['%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f']:
+                        try:
+                            date_obj = datetime.strptime(doc_date.replace('Z', '').replace('+00:00', ''), fmt)
+                            break
+                        except ValueError:
+                            continue
+                    
+                    if date_obj is None:
+                        # Try fromisoformat as fallback
+                        date_obj = datetime.fromisoformat(doc_date.replace('Z', '+00:00'))
+                else:
+                    date_obj = doc_date
+                
+                if date_obj >= twelve_months_ago:
+                    recent_invoices.append(inv)
+            except (ValueError, TypeError):
+                continue
+    
+    return {
+        "vendor_name": vendor_name,
+        "summary": {
+            "total_amount": round(total_amount, 2),
+            "total_vat": round(total_vat, 2),
+            "total_invoices": total_invoices,
+            "years_active": len(yearly_totals),
+            "frequency_pattern": frequency_analysis,
+            "recent_activity": len(recent_invoices)
+        },
+        "yearly_breakdown": yearly_breakdown,
+        "missing_periods": missing_periods,
+        "all_invoices": invoices,
+        "monthly_pattern": dict(monthly_pattern),
+        "currency": invoices[0].get('currency', 'CHF') if invoices else 'CHF'
+    }
+
 # Settings routes
 @app.get("/api/settings")
 async def get_settings(
@@ -1628,6 +2104,96 @@ async def migrate_storage(
 async def migration_status(current_user: User = Depends(get_current_user)):
     """Return current migration progress state."""
     return _migration_state
+
+# ---------------------------------------------------------------------------
+# LLM Configuration API endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/llm/config")
+async def get_llm_config(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get current LLM configuration."""
+    config = await llm_config_repository.get_config(db)
+    if not config:
+        # Create default config if none exists
+        config = await llm_config_repository.create_default_config(db)
+        await db.commit()
+    return {"config": config}
+
+@app.put("/api/llm/config")
+async def update_llm_config(
+    provider: Optional[str] = Form(None),
+    api_key: Optional[str] = Form(None),
+    api_url: Optional[str] = Form(None),
+    model_tagger: Optional[str] = Form(None),
+    model_enricher: Optional[str] = Form(None),
+    model_analytics: Optional[str] = Form(None),
+    model_responder: Optional[str] = Form(None),
+    enabled: Optional[bool] = Form(None),
+    auto_tagging: Optional[bool] = Form(None),
+    auto_enrichment: Optional[bool] = Form(None),
+    external_enrichment: Optional[bool] = Form(None),
+    max_retries: Optional[int] = Form(None),
+    retry_delay: Optional[int] = Form(None),
+    backup_provider: Optional[str] = Form(None),
+    backup_model: Optional[str] = Form(None),
+    batch_size: Optional[int] = Form(None),
+    concurrent_tasks: Optional[int] = Form(None),
+    cache_responses: Optional[bool] = Form(None),
+    min_confidence_tagging: Optional[float] = Form(None),
+    min_confidence_entity: Optional[float] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update LLM configuration."""
+    # Only include non-None values in the update
+    update_data = {}
+    for key, value in {
+        "provider": provider,
+        "api_key": api_key,
+        "api_url": api_url,
+        "model_tagger": model_tagger,
+        "model_enricher": model_enricher,
+        "model_analytics": model_analytics,
+        "model_responder": model_responder,
+        "enabled": enabled,
+        "auto_tagging": auto_tagging,
+        "auto_enrichment": auto_enrichment,
+        "external_enrichment": external_enrichment,
+        "max_retries": max_retries,
+        "retry_delay": retry_delay,
+        "backup_provider": backup_provider,
+        "backup_model": backup_model,
+        "batch_size": batch_size,
+        "concurrent_tasks": concurrent_tasks,
+        "cache_responses": cache_responses,
+        "min_confidence_tagging": min_confidence_tagging,
+        "min_confidence_entity": min_confidence_entity,
+    }.items():
+        if value is not None:
+            update_data[key] = value
+    
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid fields provided for update")
+    
+    config = await llm_config_repository.update_config(db, **update_data)
+    await db.commit()
+    
+    return {"message": "LLM configuration updated successfully", "config": config}
+
+@app.post("/api/llm/test-connection")
+async def test_llm_connection(
+    provider: str = Form(...),
+    api_url: Optional[str] = Form(None),
+    api_key: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Test LLM provider connection."""
+    result = await llm_config_repository.test_connection(db, provider, api_url, api_key)
+    return result
 
 # Serve static files (directory relative to project root)
 STATIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "static"))
@@ -1864,22 +2430,56 @@ async def validate_folders(
 
 @app.get("/api/health")
 async def health(db: AsyncSession = Depends(get_db)):
-    """Return minimal runtime diagnostics for the dashboard widget.
-
-    • `backend`: always "ok" if this route answered
-    • `db`:     "ok" if simple `SELECT 1` succeeds else "error"
-    • `llm_model`: current value from settings
-    """
-    db_status = "ok"
+    """Health check endpoint."""
     try:
-        await db.execute(text("SELECT 1"))
-    except Exception as exc:
-        db_status = f"error: {exc.__class__.__name__}"
+        # Test database connection
+        result = await db.execute(text("SELECT 1"))
+        db_status = "healthy" if result else "unhealthy"
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
+        db_status = "unhealthy"
+
+    # Test LLM service
+    try:
+        llm_status = "healthy" if await llm_service.is_configured() else "not_configured"
+    except Exception as e:
+        logger.error(f"LLM health check failed: {e}")
+        llm_status = "unhealthy"
+
+    # Test folder watcher
+    watcher_status = "healthy" if hasattr(app.state, 'folder_watcher') and app.state.folder_watcher else "not_running"
 
     return {
-        "backend": "ok",
-        "db": db_status,
-        "llm_model": settings.LLM_MODEL,
+        "status": "healthy",
+        "database": db_status,
+        "llm": llm_status,
+        "watcher": watcher_status,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+@app.get("/api/version")
+async def get_version():
+    """Get current application version."""
+    from app.version import get_version, get_release_info
+    return {
+        "version": get_version(),
+        "release": get_release_info()
+    }
+
+@app.get("/api/version/history")
+async def get_version_history():
+    """Get complete version history."""
+    from app.version import get_version_history
+    return {
+        "history": get_version_history()
+    }
+
+@app.get("/api/version/features")
+async def get_latest_features():
+    """Get features from the latest release."""
+    from app.version import get_latest_features
+    return {
+        "features": get_latest_features()
     }
 
 # ---------------------------------------------------------------------------
@@ -1895,12 +2495,10 @@ if __name__ == "__main__":
 #  Onboarding API
 # ---------------------------------------------------------------------------
 
-
 @app.post("/api/onboarding/accept-tos")
 async def accept_tos(db: AsyncSession = Depends(get_db)):
     ts = await OnboardingService(db).accept_tos()
     return {"accepted_at": ts.isoformat()}
-
 
 @app.get("/api/onboarding/status")
 async def onboarding_status(db: AsyncSession = Depends(get_db)):
@@ -1911,18 +2509,15 @@ async def onboarding_status(db: AsyncSession = Depends(get_db)):
 #  Entity CRUD
 # ---------------------------------------------------------------------------
 
-
 @app.get("/api/entities")
 async def list_entities(db: AsyncSession = Depends(get_db)):
     ents = await EntityService(db).list()
     return ents
 
-
 @app.post("/api/entities")
 async def create_entity(payload: dict, db: AsyncSession = Depends(get_db)):
     ent = await EntityService(db).create(**payload)
     return ent
-
 
 @app.put("/api/entities/{entity_id}")
 async def update_entity(entity_id: int, payload: dict, db: AsyncSession = Depends(get_db)):
@@ -1934,7 +2529,6 @@ async def update_entity(entity_id: int, payload: dict, db: AsyncSession = Depend
 # ---------------------------------------------------------------------------
 #  TOS enforcement middleware
 # ---------------------------------------------------------------------------
-
 
 @app.middleware("http")
 async def tos_guard(request: Request, call_next):
@@ -1974,3 +2568,650 @@ async def register(
     db.add(user)
     await db.commit()
     return {"created": True}
+
+# ---------------------------------------------------------------------------
+# Tenant Management API endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/tenants")
+async def get_user_tenants(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get all tenants for the current user."""
+    tenants = await tenant_repository.get_user_tenants(db, current_user.id)
+    return {"tenants": tenants}
+
+@app.get("/api/tenants/default")
+async def get_default_tenant(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get the default tenant for the current user."""
+    tenant = await tenant_repository.get_default_tenant(db, current_user.id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="No default tenant found")
+    return {"tenant": tenant}
+
+@app.get("/api/tenants/{tenant_id}")
+async def get_tenant(
+    tenant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get a specific tenant by ID."""
+    tenant = await tenant_repository.get_tenant_by_id(db, current_user.id, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"tenant": tenant}
+
+@app.post("/api/tenants")
+async def create_tenant(
+    name: str = Form(...),
+    alias: str = Form(...),
+    type: str = Form("company"),
+    street: Optional[str] = Form(None),
+    house_number: Optional[str] = Form(None),
+    apartment: Optional[str] = Form(None),
+    area_code: Optional[str] = Form(None),
+    county: Optional[str] = Form(None),
+    country: Optional[str] = Form(None),
+    iban: Optional[str] = Form(None),
+    vat_id: Optional[str] = Form(None),
+    is_default: bool = Form(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a new tenant for the current user."""
+    tenant_data = {
+        "name": name,
+        "alias": alias,
+        "type": type,
+        "street": street,
+        "house_number": house_number,
+        "apartment": apartment,
+        "area_code": area_code,
+        "county": county,
+        "country": country,
+        "iban": iban,
+        "vat_id": vat_id,
+        "is_default": is_default,
+        "is_active": True
+    }
+    
+    # Remove None values
+    tenant_data = {k: v for k, v in tenant_data.items() if v is not None}
+    
+    tenant = await tenant_repository.create_tenant(db, current_user.id, **tenant_data)
+    await db.commit()
+    return {"tenant": tenant}
+
+@app.put("/api/tenants/{tenant_id}")
+async def update_tenant(
+    tenant_id: int,
+    name: Optional[str] = Form(None),
+    alias: Optional[str] = Form(None),
+    type: Optional[str] = Form(None),
+    street: Optional[str] = Form(None),
+    house_number: Optional[str] = Form(None),
+    apartment: Optional[str] = Form(None),
+    area_code: Optional[str] = Form(None),
+    county: Optional[str] = Form(None),
+    country: Optional[str] = Form(None),
+    iban: Optional[str] = Form(None),
+    vat_id: Optional[str] = Form(None),
+    is_default: Optional[bool] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update a tenant for the current user."""
+    update_data = {}
+    
+    # Build update data dictionary
+    if name is not None:
+        update_data["name"] = name
+    if alias is not None:
+        update_data["alias"] = alias
+    if type is not None:
+        update_data["type"] = type
+    if street is not None:
+        update_data["street"] = street
+    if house_number is not None:
+        update_data["house_number"] = house_number
+    if apartment is not None:
+        update_data["apartment"] = apartment
+    if area_code is not None:
+        update_data["area_code"] = area_code
+    if county is not None:
+        update_data["county"] = county
+    if country is not None:
+        update_data["country"] = country
+    if iban is not None:
+        update_data["iban"] = iban
+    if vat_id is not None:
+        update_data["vat_id"] = vat_id
+    if is_default is not None:
+        update_data["is_default"] = is_default
+    
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    
+    tenant = await tenant_repository.update_tenant(db, current_user.id, tenant_id, **update_data)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    
+    await db.commit()
+    return {"tenant": tenant}
+
+@app.delete("/api/tenants/{tenant_id}")
+async def delete_tenant(
+    tenant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete (deactivate) a tenant."""
+    success = await tenant_repository.delete_tenant(db, current_user.id, tenant_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    
+    await db.commit()
+    return {"message": "Tenant deleted successfully"}
+
+@app.post("/api/tenants/{tenant_id}/set-default")
+async def set_default_tenant(
+    tenant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Set a tenant as the default for the current user."""
+    success = await tenant_repository.set_default_tenant(db, current_user.id, tenant_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    
+    await db.commit()
+    return {"message": "Default tenant updated successfully"}
+
+@app.post("/api/tenants/clear-default")
+async def clear_default_tenant(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Clear the default tenant for the current user."""
+    await tenant_repository.clear_default_tenant(db, current_user.id)
+    await db.commit()
+    return {"message": "Default tenant cleared successfully"}
+
+@app.post("/api/tenants/cleanup-vendors")
+async def cleanup_vendor_tenants(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Remove vendor companies that were incorrectly created as tenants."""
+    try:
+        # Known vendor companies that should NOT be tenants
+        vendor_names = [
+            "Hetzner Online GmbH", "Hetzner",
+            "Team Blockonauts", "Blockonauts", 
+            "Impact Labs", "21 Impact Labs AG",
+            "Chainstack Pte.", "Chainstack",
+            "GitBook", "GitBook (Company)",
+            "Digital Ocean", "DigitalOcean",
+            "Candoo Labs", "Candoo Labs (Company)",
+            "Validity Labs", "Validity Labs (Company)",
+            "DAT AG", "DAT AG (Company)"
+        ]
+        
+        # Find entities (tenants) with vendor names
+        from sqlalchemy import or_
+        vendor_conditions = [Entity.name.ilike(f"%{name}%") for name in vendor_names]
+        vendor_conditions.extend([Entity.alias.ilike(f"%{name}%") for name in vendor_names])
+        
+        result = await db.execute(
+            select(Entity).where(or_(*vendor_conditions))
+        )
+        vendor_tenants = result.scalars().all()
+        
+        if not vendor_tenants:
+            return {
+                "status": "success",
+                "message": "No vendor companies found in tenant list - all clean!",
+                "removed": 0,
+                "documents_reset": 0
+            }
+        
+        # Check which documents are using these vendor tenants as recipients
+        affected_docs = []
+        for tenant in vendor_tenants:
+            docs_result = await db.execute(
+                select(Document).where(Document.recipient == tenant.alias)
+            )
+            docs = docs_result.scalars().all()
+            if docs:
+                affected_docs.extend([(doc, tenant) for doc in docs])
+        
+        # Reset recipient field for affected documents
+        for doc, tenant in affected_docs:
+            doc.recipient = None  # Reset to allow re-processing
+        
+        # Remove vendor tenant entities - handle foreign key constraints
+        for tenant in vendor_tenants:
+            # First, remove any user_entities relationships 
+            await db.execute(
+                text("DELETE FROM user_entities WHERE entity_id = :entity_id"),
+                {"entity_id": tenant.id}
+            )
+            # Then delete the entity itself
+            await db.delete(tenant)
+        
+        # Commit changes
+        await db.commit()
+        
+        return {
+            "status": "success",
+            "message": f"Cleanup completed: removed {len(vendor_tenants)} vendor tenants, reset {len(affected_docs)} documents",
+            "removed": len(vendor_tenants),
+            "documents_reset": len(affected_docs),
+            "vendor_tenants": [{"id": t.id, "name": t.name, "alias": t.alias} for t in vendor_tenants]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error cleaning up vendor tenants: {str(e)}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
+
+@app.post("/api/admin/cleanup-dates")
+async def cleanup_date_formats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Clean up date formats in the database, converting all to ISO format."""
+    from sqlalchemy import text
+    
+    # Get all documents with non-null dates
+    result = await db.execute(
+        text("SELECT id, document_date, due_date FROM documents WHERE document_date IS NOT NULL OR due_date IS NOT NULL")
+    )
+    documents = result.fetchall()
+    
+    converted_count = 0
+    errors = []
+    
+    for doc_id, doc_date, due_date in documents:
+        try:
+            # Check and convert document_date
+            if doc_date:
+                converted_doc_date = _validate_and_convert_date_global(str(doc_date))
+                if converted_doc_date != str(doc_date):
+                    await db.execute(
+                        text("UPDATE documents SET document_date = :new_date WHERE id = :doc_id"),
+                        {"new_date": converted_doc_date, "doc_id": doc_id}
+                    )
+                    converted_count += 1
+                    logger.info(f"Updated document {doc_id} document_date: {doc_date} -> {converted_doc_date}")
+            
+            # Check and convert due_date
+            if due_date:
+                converted_due_date = _validate_and_convert_date_global(str(due_date))
+                if converted_due_date != str(due_date):
+                    await db.execute(
+                        text("UPDATE documents SET due_date = :new_date WHERE id = :doc_id"),
+                        {"new_date": converted_due_date, "doc_id": doc_id}
+                    )
+                    converted_count += 1
+                    logger.info(f"Updated document {doc_id} due_date: {due_date} -> {converted_due_date}")
+        
+        except Exception as e:
+            error_msg = f"Failed to convert dates for document {doc_id}: {str(e)}"
+            errors.append(error_msg)
+            logger.error(error_msg)
+    
+    await db.commit()
+    
+    return {
+        "status": "success",
+        "converted_count": converted_count,
+        "total_documents": len(documents),
+        "errors": errors
+    }
+
+@app.get("/api/processing/status")
+async def get_processing_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get current processing queue status for dashboard display."""
+    
+    # Get current processing documents
+    processing_result = await db.execute(
+        select(Document).filter(Document.status == 'processing').order_by(Document.created_at.desc())
+    )
+    processing_docs = processing_result.scalars().all()
+    
+    # Get recent failed documents (last 10)
+    failed_result = await db.execute(
+        select(Document).filter(Document.status == 'failed').order_by(Document.updated_at.desc()).limit(10)
+    )
+    failed_docs = failed_result.scalars().all()
+    
+    # Get recent successful documents (last 10)
+    success_result = await db.execute(
+        select(Document).filter(Document.status == 'processed').order_by(Document.updated_at.desc()).limit(10)
+    )
+    success_docs = success_result.scalars().all()
+    
+    # Check if folder watcher is active (simple heuristic - any recent activity)
+    from datetime import datetime, timedelta
+    recent_threshold = datetime.utcnow() - timedelta(minutes=5)
+    
+    recent_activity_result = await db.execute(
+        select(func.count(Document.id)).filter(Document.created_at >= recent_threshold)
+    )
+    recent_activity_count = recent_activity_result.scalar() or 0
+    
+    return {
+        "processing": {
+            "count": len(processing_docs),
+            "documents": [
+                {
+                    "id": doc.id,
+                    "title": doc.title or "Processing...",
+                    "filename": os.path.basename(doc.file_path) if doc.file_path else "unknown",
+                    "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                    "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+                }
+                for doc in processing_docs
+            ]
+        },
+        "recent_failed": {
+            "count": len(failed_docs),
+            "documents": [
+                {
+                    "id": doc.id,
+                    "title": doc.title or "Failed Document",
+                    "filename": os.path.basename(doc.file_path) if doc.file_path else "unknown",
+                    "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+                }
+                for doc in failed_docs
+            ]
+        },
+        "recent_success": {
+            "count": len(success_docs),
+            "documents": [
+                {
+                    "id": doc.id,
+                    "title": doc.title or "Document",
+                    "filename": os.path.basename(doc.file_path) if doc.file_path else "unknown",
+                    "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+                }
+                for doc in success_docs
+            ]
+        },
+        "watcher_active": recent_activity_count > 0,
+        "stats": {
+            "recent_activity_count": recent_activity_count,
+            "processing_count": len(processing_docs),
+            "failed_count": len(failed_docs),
+        }
+    }
+
+# ---------------------------------------------------------------------------
+# Processing Rules API Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/processing/rules")
+async def get_processing_rules(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get all processing rules."""
+    from app.repository import ProcessingRuleRepository
+    
+    rule_repo = ProcessingRuleRepository()
+    rules = await rule_repo.get_all(db)
+    
+    return {
+        "status": "success",
+        "rules": rules
+    }
+
+@app.get("/api/processing/rules/{rule_id}")
+async def get_processing_rule(
+    rule_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get a specific processing rule by ID."""
+    from app.repository import ProcessingRuleRepository
+    
+    rule_repo = ProcessingRuleRepository()
+    rule = await rule_repo.get_by_id(db, rule_id)
+    
+    if not rule:
+        raise HTTPException(status_code=404, detail="Processing rule not found")
+    
+    return {
+        "status": "success",
+        "rule": rule
+    }
+
+@app.post("/api/processing/rules")
+async def create_processing_rule(
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    vendor: Optional[str] = Form(None),
+    preferred_tenant_id: Optional[int] = Form(None),
+    conditions: str = Form(...),  # JSON string
+    actions: str = Form(...),     # JSON string
+    priority: int = Form(0),
+    enabled: bool = Form(True),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a new processing rule."""
+    from app.repository import ProcessingRuleRepository
+    import json
+    
+    try:
+        # Validate JSON strings
+        conditions_data = json.loads(conditions)
+        actions_data = json.loads(actions)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+    
+    rule_repo = ProcessingRuleRepository()
+    
+    rule_data = {
+        "name": name,
+        "description": description,
+        "vendor": vendor,
+        "preferred_tenant_id": preferred_tenant_id,
+        "conditions": conditions_data,
+        "actions": actions_data,
+        "priority": priority,
+        "enabled": enabled,
+    }
+    
+    try:
+        rule = await rule_repo.create(db, **rule_data)
+        await db.commit()
+        
+        return {
+            "status": "success",
+            "message": "Processing rule created successfully",
+            "rule": rule
+        }
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error creating processing rule: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create processing rule: {str(e)}")
+
+@app.put("/api/processing/rules/{rule_id}")
+async def update_processing_rule(
+    rule_id: int,
+    name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    vendor: Optional[str] = Form(None),
+    preferred_tenant_id: Optional[int] = Form(None),
+    conditions: Optional[str] = Form(None),  # JSON string
+    actions: Optional[str] = Form(None),     # JSON string
+    priority: Optional[int] = Form(None),
+    enabled: Optional[bool] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update an existing processing rule."""
+    from app.repository import ProcessingRuleRepository
+    import json
+    
+    rule_repo = ProcessingRuleRepository()
+    
+    # Check if rule exists
+    existing_rule = await rule_repo.get_by_id(db, rule_id)
+    if not existing_rule:
+        raise HTTPException(status_code=404, detail="Processing rule not found")
+    
+    # Prepare update data
+    update_data = {}
+    
+    if name is not None:
+        update_data["name"] = name
+    if description is not None:
+        update_data["description"] = description
+    if vendor is not None:
+        update_data["vendor"] = vendor
+    if preferred_tenant_id is not None:
+        update_data["preferred_tenant_id"] = preferred_tenant_id
+    if priority is not None:
+        update_data["priority"] = priority
+    if enabled is not None:
+        update_data["enabled"] = enabled
+    
+    # Validate and parse JSON strings
+    if conditions is not None:
+        try:
+            update_data["conditions"] = json.loads(conditions)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid conditions JSON: {str(e)}")
+    
+    if actions is not None:
+        try:
+            update_data["actions"] = json.loads(actions)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid actions JSON: {str(e)}")
+    
+    try:
+        rule = await rule_repo.update(db, rule_id, **update_data)
+        await db.commit()
+        
+        return {
+            "status": "success",
+            "message": "Processing rule updated successfully",
+            "rule": rule
+        }
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error updating processing rule {rule_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update processing rule: {str(e)}")
+
+@app.delete("/api/processing/rules/{rule_id}")
+async def delete_processing_rule(
+    rule_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a processing rule."""
+    from app.repository import ProcessingRuleRepository
+    
+    rule_repo = ProcessingRuleRepository()
+    
+    # Check if rule exists
+    existing_rule = await rule_repo.get_by_id(db, rule_id)
+    if not existing_rule:
+        raise HTTPException(status_code=404, detail="Processing rule not found")
+    
+    try:
+        success = await rule_repo.delete(db, rule_id)
+        if success:
+            await db.commit()
+            return {
+                "status": "success",
+                "message": "Processing rule deleted successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to delete processing rule")
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error deleting processing rule {rule_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete processing rule: {str(e)}")
+
+@app.post("/api/processing/rules/{rule_id}/test")
+async def test_processing_rule(
+    rule_id: int,
+    document_id: int = Form(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Test a processing rule against a specific document."""
+    from app.repository import ProcessingRuleRepository, DocumentRepository
+    from app.rule_engine import RuleEvaluator
+    
+    rule_repo = ProcessingRuleRepository()
+    doc_repo = DocumentRepository()
+    
+    # Get rule and document
+    rule = await rule_repo.get_by_id(db, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Processing rule not found")
+    
+    document = await doc_repo.get_by_id(db, document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    try:
+        evaluator = RuleEvaluator()
+        
+        # Test if rule matches document
+        matches = await evaluator._evaluate_rule(document, rule)
+        
+        return {
+            "status": "success",
+            "rule_id": rule_id,
+            "document_id": document_id,
+            "matches": matches,
+            "rule_name": rule["name"],
+            "document_title": document.title,
+            "actions": rule["actions"] if matches else []
+        }
+    except Exception as e:
+        logger.error(f"Error testing processing rule {rule_id} against document {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to test processing rule: {str(e)}")
+
+@app.post("/api/processing/rules/process-document")
+async def process_document_with_rules(
+    document_id: int = Form(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Process a document through all enabled processing rules."""
+    from app.repository import DocumentRepository
+    from app.rule_engine import DocumentRuleProcessor
+    
+    doc_repo = DocumentRepository()
+    
+    # Get document
+    document = await doc_repo.get_by_id(db, document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    try:
+        processor = DocumentRuleProcessor()
+        result = await processor.process_document(db, document)
+        
+        return {
+            "status": "success",
+            "message": "Document processed through rule engine",
+            "result": result
+        }
+    except Exception as e:
+        logger.error(f"Error processing document {document_id} through rule engine: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")

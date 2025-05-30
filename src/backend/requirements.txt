@@ -38,3 +38,8 @@ pillow>=10.3.0
 # torch/torchvision installed in Dockerfile to ensure correct wheel; keep here optional for local dev.
 
 accelerate>=0.28.0
+
+# Testing dependencies
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0

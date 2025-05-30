@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from app.models import Document, Tag, DocumentTag
 from calendar import monthrange
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -65,7 +66,7 @@ class AnalyticsService:
         
         return [{"status": status, "count": count} for status, count in results]
     
-    def get_document_count_by_month(self, months: int = 6) -> List[Dict[str, Any]]:
+    async def get_document_count_by_month(self, months: int = 6) -> List[Dict[str, Any]]:
         """Get document count by month for the last N months.
         
         Args:
@@ -77,34 +78,67 @@ class AnalyticsService:
         today = datetime.utcnow()
         start_date = today - timedelta(days=30 * months)
         
-        results = self.db.query(
-            extract('year', Document.created_at).label('year'),
-            extract('month', Document.created_at).label('month'),
-            func.count(Document.id).label('count')
-        ).filter(
-            Document.created_at >= start_date
-        ).group_by(
-            extract('year', Document.created_at),
-            extract('month', Document.created_at)
-        ).order_by(
-            extract('year', Document.created_at),
-            extract('month', Document.created_at)
-        ).all()
+        if hasattr(self.db, "execute"):
+            # Async mode - For string date fields, we need to fetch and parse manually  
+            stmt = select(Document)
+            result = await self.db.execute(stmt)
+            documents = result.scalars().all()
+            
+            # Group by year/month manually
+            monthly_data = {}
+            
+            for doc in documents:
+                # Use created_at if document_date is not available
+                date_to_use = None
+                
+                if doc.document_date:
+                    try:
+                        # Parse document_date string
+                        date_str = str(doc.document_date)
+                        
+                        # Try ISO format first
+                        if re.match(r'^\d{4}-\d{2}-\d{2}', date_str):
+                            date_to_use = datetime.strptime(date_str[:10], '%Y-%m-%d')
+                        # Try European format
+                        elif re.match(r'^\d{1,2}\.\d{1,2}\.\d{4}', date_str):
+                            parts = date_str.split('.')
+                            if len(parts) >= 3:
+                                date_to_use = datetime(int(parts[2]), int(parts[1]), int(parts[0]))
+                    except (ValueError, TypeError, IndexError):
+                        pass
+                
+                # Fallback to created_at if document_date parsing failed
+                if not date_to_use and doc.created_at:
+                    date_to_use = doc.created_at
+                
+                if not date_to_use or date_to_use < start_date:
+                    continue
+                    
+                year = date_to_use.year
+                month = date_to_use.month
+                key = f"{year}-{month:02d}"
+                
+                if key not in monthly_data:
+                    monthly_data[key] = {
+                        "year": year,
+                        "month": month,
+                        "month_name": date_to_use.strftime('%B'),
+                        "count": 0
+                    }
+                
+                monthly_data[key]["count"] += 1
+            
+            # Convert to list and sort
+            results = list(monthly_data.values())
+            results.sort(key=lambda x: (x["year"], x["month"]))
+            
+        else:
+            # Sync mode fallback - this shouldn't be used in the current setup
+            results = []
         
-        # Format results
-        formatted_results = []
-        for year, month, count in results:
-            month_name = datetime(int(year), int(month), 1).strftime('%B')
-            formatted_results.append({
-                "year": int(year),
-                "month": int(month),
-                "month_name": month_name,
-                "count": count
-            })
-        
-        return formatted_results
+        return results
     
-    def get_invoice_amount_by_month(self, months: int = 6) -> List[Dict[str, Any]]:
+    async def get_invoice_amount_by_month(self, months: int = 6) -> List[Dict[str, Any]]:
         """Get total invoice amount by month for the last N months.
         
         Args:
@@ -116,36 +150,71 @@ class AnalyticsService:
         today = datetime.utcnow()
         start_date = today - timedelta(days=30 * months)
         
-        results = self.db.query(
-            extract('year', Document.document_date).label('year'),
-            extract('month', Document.document_date).label('month'),
-            func.sum(Document.amount).label('total_amount'),
-            func.count(Document.id).label('count')
-        ).filter(
-            Document.document_date >= start_date,
-            Document.document_type == 'invoice',
-            Document.amount.isnot(None)
-        ).group_by(
-            extract('year', Document.document_date),
-            extract('month', Document.document_date)
-        ).order_by(
-            extract('year', Document.document_date),
-            extract('month', Document.document_date)
-        ).all()
+        if hasattr(self.db, "execute"):
+            # Async mode - For string date fields, we need to fetch and parse manually
+            stmt = select(Document).where(
+                Document.document_type == 'invoice',
+                Document.amount.isnot(None)
+            )
+            
+            result = await self.db.execute(stmt)
+            documents = result.scalars().all()
+            
+            # Group by year/month manually
+            monthly_data = {}
+            
+            for doc in documents:
+                if not doc.document_date:
+                    continue
+                    
+                try:
+                    # Parse date string (could be ISO format or European format)
+                    date_str = str(doc.document_date)
+                    
+                    # Try ISO format first
+                    if re.match(r'^\d{4}-\d{2}-\d{2}', date_str):
+                        doc_date = datetime.strptime(date_str[:10], '%Y-%m-%d')
+                    # Try European format
+                    elif re.match(r'^\d{1,2}\.\d{1,2}\.\d{4}', date_str):
+                        parts = date_str.split('.')
+                        if len(parts) >= 3:
+                            doc_date = datetime(int(parts[2]), int(parts[1]), int(parts[0]))
+                    else:
+                        continue
+                        
+                    # Check if within date range
+                    if doc_date < start_date:
+                        continue
+                        
+                    year = doc_date.year
+                    month = doc_date.month
+                    key = f"{year}-{month:02d}"
+                    
+                    if key not in monthly_data:
+                        monthly_data[key] = {
+                            "year": year,
+                            "month": month,
+                            "month_name": doc_date.strftime('%B'),
+                            "total_amount": 0.0,
+                            "count": 0
+                        }
+                    
+                    monthly_data[key]["total_amount"] += float(doc.amount) if doc.amount else 0.0
+                    monthly_data[key]["count"] += 1
+                    
+                except (ValueError, TypeError, IndexError) as e:
+                    # Skip documents with invalid dates
+                    continue
+            
+            # Convert to list and sort
+            results = list(monthly_data.values())
+            results.sort(key=lambda x: (x["year"], x["month"]))
+            
+        else:
+            # Sync mode fallback - this shouldn't be used in the current setup
+            results = []
         
-        # Format results
-        formatted_results = []
-        for year, month, total_amount, count in results:
-            month_name = datetime(int(year), int(month), 1).strftime('%B')
-            formatted_results.append({
-                "year": int(year),
-                "month": int(month),
-                "month_name": month_name,
-                "total_amount": float(total_amount),
-                "count": count
-            })
-        
-        return formatted_results
+        return results
     
     async def get_payment_status_summary(self) -> Dict[str, Any]:
         """Get summary counts + amounts for invoice payment status (async-aware)."""
@@ -297,12 +366,12 @@ class AnalyticsService:
 
     async def get_monthly_document_count(self, year: int, *_):
         """Return monthly document counts for a specific year."""
-        data = self.get_document_count_by_month(months=24)  # Retrieve last 2 years
+        data = await self.get_document_count_by_month(months=24)  # Retrieve last 2 years
         return [item for item in data if item["year"] == year]
 
     async def get_monthly_invoice_amount(self, year: int, *_):
         """Return monthly invoice amounts for a specific year."""
-        data = self.get_invoice_amount_by_month(months=24)
+        data = await self.get_invoice_amount_by_month(months=24)
         return [item for item in data if item["year"] == year]
 
     async def get_summary_metrics(self, *_):

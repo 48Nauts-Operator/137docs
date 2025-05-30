@@ -19,8 +19,9 @@ const LoginPage: React.FC = () => {
   useEffect(() => {
     http.get('/users')
       .then(res => setNoUsers((res.data as any[]).length === 0))
-      .catch((err)=>{
-        if(err.response && err.response.status===403){
+      .catch((err) => {
+        // If we get a 403, it means we're not admin but users exist
+        if (err.response && err.response.status === 403) {
           setNoUsers(false);
         } else {
           setNoUsers(true);

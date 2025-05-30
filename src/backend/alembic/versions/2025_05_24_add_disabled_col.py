@@ -13,8 +13,13 @@ depends_on = None
 
 
 def upgrade():
-    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN DEFAULT FALSE;")
+    try:
+        op.execute("ALTER TABLE users ADD COLUMN disabled BOOLEAN DEFAULT FALSE;")
+    except Exception:
+        # Column probably already exists
+        pass
 
 
 def downgrade():
-    op.execute("ALTER TABLE users DROP COLUMN IF EXISTS disabled;") 
+    # SQLite doesn't support DROP COLUMN, so we can't easily remove this column
+    pass 

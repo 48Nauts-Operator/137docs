@@ -20,6 +20,9 @@ import LoginPage from './pages/LoginPage';
 import UsersPage from './pages/UsersPage';
 import ReportsPage from './pages/ReportsPage';
 import MarketplacePage from './pages/MarketplacePage';
+import ProcessingActivityPage from './pages/ProcessingActivityPage';
+import ProcessingRulesPage from './pages/ProcessingRulesPage';
+import VendorAnalytics from './components/vendors/VendorAnalytics';
 import Wizard from './modules/onboarding/Wizard';
 import './index.css';
 
@@ -46,58 +49,61 @@ const App: React.FC = () => {
   return (
     <Router>
       <AuthProvider>
-        <EntityProvider>
-          <Routes>
-            <Route path="/onboarding" element={<Wizard />} />
-            <Route path="/login" element={<LoginPage />} />
-            {/* Protected routes */}
-            <Route
-              path="*"
-              element={
-                <RequireAuth>
+        <Routes>
+          <Route path="/onboarding" element={<Wizard />} />
+          <Route path="/login" element={<LoginPage />} />
+          {/* Protected routes */}
+          <Route
+            path="*"
+            element={
+              <RequireAuth>
+                <EntityProvider>
                   <div className="flex h-screen bg-secondary-50 dark:bg-secondary-900 text-secondary-900 dark:text-secondary-100">
                     <Sidebar collapsed={sidebarCollapsed} toggleSidebar={toggleSidebar} />
                     <div className={`flex-1 flex flex-col ${sidebarCollapsed ? 'main-content-collapsed' : 'main-content'}`}>
                       <Navbar collapsed={sidebarCollapsed} toggleSidebar={toggleSidebar} />
-                      <main className="flex-1 overflow-y-auto p-4">
+                      <main className="flex-1 overflow-y-auto">
                         <Routes>
-                          <Route path="/" element={<Dashboard />} />
-                          <Route path="/documents" element={<Documents />} />
-                          <Route path="/vision-search" element={<VisionSearch />} />
+                          <Route index element={<Dashboard />} />
+                          <Route path="/dashboard" element={<Dashboard />} />
                           <Route path="/invoices" element={<Invoices />} />
-                          <Route path="/documents-all" element={<Documents />} />
-                          <Route
-                            path="/analytics"
-                            element={
-                              <RequirePermission roles={["admin"]}>
-                                <Analytics />
-                              </RequirePermission>
-                            }
-                          />
-                          <Route path="/users" element={<RequirePermission roles={["admin"]}><Users /></RequirePermission>} />
+                          <Route path="/documents" element={<Documents />} />
+                          <Route path="/search" element={<VisionSearch />} />
+                          <Route path="/address-book" element={<AddressBook />} />
+                          <Route path="/analytics" element={<Analytics />} />
                           <Route path="/calendar" element={<Calendar />} />
                           <Route path="/notifications" element={<Notifications />} />
-                          <Route path="/address-book" element={<AddressBook />} />
                           <Route path="/changelog" element={<Changelog />} />
+                          <Route path="/reports" element={<Reports />} />
+                          <Route path="/marketplace" element={<Marketplace />} />
+                          <Route path="/processing-activity" element={<ProcessingActivityPage />} />
+                          <Route path="/processing-rules" element={<ProcessingRulesPage />} />
+                          <Route path="/vendor-analytics" element={<VendorAnalytics />} />
                           <Route
                             path="/settings"
                             element={
-                              <RequirePermission roles={["admin"]}>
+                              <RequirePermission roles={['admin']}>
                                 <Settings />
                               </RequirePermission>
                             }
                           />
-                          <Route path="/marketplace" element={<Marketplace />} />
-                          <Route path="/reports" element={<Reports />} />
+                          <Route
+                            path="/users"
+                            element={
+                              <RequirePermission roles={['admin']}>
+                                <Users />
+                              </RequirePermission>
+                            }
+                          />
                         </Routes>
                       </main>
                     </div>
                   </div>
-                </RequireAuth>
-              }
-            />
-          </Routes>
-        </EntityProvider>
+                </EntityProvider>
+              </RequireAuth>
+            }
+          />
+        </Routes>
       </AuthProvider>
     </Router>
   );

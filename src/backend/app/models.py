@@ -3,10 +3,15 @@ Database models for the Document Management System.
 """
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table, Boolean, Text
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import ARRAY
 from datetime import datetime
 from app.database import Base
-from pgvector.sqlalchemy import Vector
+
+# Try to import Vector for PostgreSQL, fall back to Text for SQLite
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:
+    # For SQLite, use Text to store vector data as JSON
+    Vector = lambda size: Text
 
 # Association table for document-tag relationship
 document_tag = Table(
@@ -207,33 +212,137 @@ class AppSettings(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 # ---------------------------------------------------------------------------
+#  LLM Configuration (local-first AI integration)
+# ---------------------------------------------------------------------------
+
+
+class LLMConfig(Base):
+    """LLM configuration for local-first AI integration."""
+
+    __tablename__ = "llm_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Provider configuration
+    provider = Column(String(50), default="local")  # local | openai | anthropic | custom
+    api_key = Column(String(255), nullable=True)  # encrypted API key for cloud providers
+    api_url = Column(String(255), nullable=True)  # custom endpoint URL (e.g., LiteLLM)
+    
+    # Model preferences per task type
+    model_tagger = Column(String(100), default="phi3")  # small model for tagging
+    model_enricher = Column(String(100), default="llama3")  # mid-size for field completion
+    model_analytics = Column(String(100), default="llama3")  # analytics summaries
+    model_responder = Column(String(100), nullable=True)  # large model for responses (Pro feature)
+    
+    # Processing configuration
+    enabled = Column(Boolean, default=False)  # master enable/disable switch
+    auto_tagging = Column(Boolean, default=True)  # automatic document tagging
+    auto_enrichment = Column(Boolean, default=True)  # automatic field completion
+    external_enrichment = Column(Boolean, default=False)  # internet-based enrichment
+    
+    # Reliability settings
+    max_retries = Column(Integer, default=3)  # retry attempts before fallback
+    retry_delay = Column(Integer, default=300)  # delay in seconds (5 minutes)
+    backup_provider = Column(String(50), nullable=True)  # fallback provider
+    backup_model = Column(String(100), nullable=True)  # fallback model
+    
+    # Performance settings
+    batch_size = Column(Integer, default=5)  # documents per batch
+    concurrent_tasks = Column(Integer, default=2)  # parallel LLM operations
+    cache_responses = Column(Boolean, default=True)  # cache LLM responses
+    
+    # Confidence thresholds
+    min_confidence_tagging = Column(Float, default=0.7)  # minimum confidence for auto-tagging
+    min_confidence_entity = Column(Float, default=0.8)  # minimum confidence for entity matching
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+# ---------------------------------------------------------------------------
 #  Entity / multi-tenant models
 # ---------------------------------------------------------------------------
 
 
 class Entity(Base):
-    """Company or personal profile representing a billing/ownership context."""
+    """Company or personal profile representing a billing/ownership context (Tenant)."""
 
     __tablename__ = "entities"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
+    alias = Column(String(100), nullable=False)  # Display name (Personal, Company A, etc.)
     type = Column(String(20), default="company")  # company | individual
-    address_json = Column(Text, nullable=True)  # JSON string for MVP
-    vat_id = Column(String(50), nullable=True)
+    
+    # Address fields (as requested in profile.md)
+    street = Column(String(255), nullable=True)
+    house_number = Column(String(20), nullable=True)
+    apartment = Column(String(50), nullable=True)
+    area_code = Column(String(20), nullable=True)
+    county = Column(String(100), nullable=True)
+    country = Column(String(100), nullable=True)
+    
+    # Financial information
     iban = Column(String(50), nullable=True)
-    aliases = Column(ARRAY(String), nullable=True)  # list of known names
+    vat_id = Column(String(50), nullable=True)
+    
+    # Additional metadata
+    aliases = Column(Text, nullable=True)  # JSON string list of known names for LLM matching
+    is_active = Column(Boolean, default=True)  # for tenant switching
+    
+    # Legacy JSON field for backward compatibility
+    address_json = Column(Text, nullable=True)  # JSON string for MVP
+    
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class UserEntity(Base):
-    """Link table between users and entities (future multi-user support)."""
+    """Link table between users and entities (tenant access control)."""
 
     __tablename__ = "user_entities"
 
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     entity_id = Column(Integer, ForeignKey("entities.id"), primary_key=True)
     role = Column(String(20), default="owner")  # owner | member
+    is_default = Column(Boolean, default=False)  # default tenant for this user
 
     entity = relationship("Entity")
     user = relationship("User")
+
+# ---------------------------------------------------------------------------
+#  Document Processing Rules
+# ---------------------------------------------------------------------------
+
+class ProcessingRule(Base):
+    """Rule for automated document processing and classification."""
+
+    __tablename__ = "processing_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Basic rule identification
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # Rule matching criteria
+    vendor = Column(String(255), nullable=True, index=True)
+    preferred_tenant_id = Column(Integer, ForeignKey("entities.id"), nullable=True)
+    
+    # Conditions and actions stored as JSON strings
+    conditions = Column(Text, nullable=False)  # JSON: [{"field": "text", "operator": "contains", "value": "Invoice"}]
+    actions = Column(Text, nullable=False)     # JSON: [{"type": "assign_tenant", "value": "entity_id"}]
+    
+    # Rule management
+    priority = Column(Integer, default=0, index=True)  # Lower number = higher priority
+    enabled = Column(Boolean, default=True, index=True)
+    
+    # Usage statistics
+    matches_count = Column(Integer, default=0)
+    last_matched_at = Column(DateTime, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    preferred_tenant = relationship("Entity", foreign_keys=[preferred_tenant_id])

@@ -1,8 +1,10 @@
 import React, { useState, useMemo } from 'react';
-import { useDocuments } from '../../services/api';
+import { useNavigate } from 'react-router-dom';
+import { useDocuments, useTenants } from '../../services/api';
 import DataTable, { Column } from '../common/DataTable';
 import StatusBadge from '../common/StatusBadge';
 import { formatDate } from '../../utils/date';
+import { Building2, User } from 'lucide-react';
 
 interface Props {
   onSelect?: (doc: any) => void;
@@ -16,6 +18,10 @@ const InvoiceTable: React.FC<Props> = ({ onSelect, dueFilter = false, documents:
   const documents = overrideDocs ?? fetchedDocs;
   const loading = overrideDocs ? false : fetchLoading;
   const error = overrideDocs ? null : fetchError;
+  const navigate = useNavigate();
+
+  // Get tenants for recipient display
+  const { tenants, defaultTenant } = useTenants();
 
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortAsc, setSortAsc] = useState<boolean>(true);
@@ -44,9 +50,56 @@ const InvoiceTable: React.FC<Props> = ({ onSelect, dueFilter = false, documents:
     });
   }
 
+  // Apply tenant filtering based on current default tenant
+  if (defaultTenant) {
+    tableData = tableData.filter((doc: any) => {
+      return doc.recipient === defaultTenant.alias;
+    });
+  }
+
   const baseColumns: (Column<any> & { id: string; sortField?: (row: any) => any })[] = [
     { id: 'date', header: 'Date Added', accessor: (r) => formatDate(r.created_at), sortField: (r) => new Date(r.created_at).getTime() },
-    { id: 'vendor', header: 'Vendor', accessor: 'sender', sortField: (r) => r.sender },
+    { 
+      id: 'vendor', 
+      header: 'Vendor', 
+      accessor: (r) => (
+        <button
+          onClick={(e) => handleVendorClick(r.sender, e)}
+          className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline text-left"
+          title={`View analytics for ${r.sender}`}
+        >
+          {r.sender || '-'}
+        </button>
+      ), 
+      sortField: (r) => r.sender 
+    },
+    { 
+      id: 'tenant', 
+      header: 'Tenant', 
+      accessor: (r) => {
+        const matchingTenant = tenants.find(t => t.alias === r.recipient);
+        if (matchingTenant) {
+          return (
+            <div className="flex items-center space-x-1">
+              {matchingTenant.type === 'company' ? (
+                <Building2 size={14} className="text-blue-500" />
+              ) : (
+                <User size={14} className="text-green-500" />
+              )}
+              <span className="text-sm">{matchingTenant.alias}</span>
+            </div>
+          );
+        } else {
+          return (
+            <div className="flex items-center space-x-1">
+              <User size={14} className="text-secondary-500" />
+              <span className="text-sm text-secondary-500">{r.recipient || '-'}</span>
+            </div>
+          );
+        }
+      },
+      sortField: (r) => r.recipient 
+    },
     { id: 'invoice', header: 'Invoice No', accessor: 'title', sortField: (r) => r.title },
     { id: 'invoice_date', header: 'Invoice Date', accessor: (r) => formatDate(r.document_date), sortField: (r) => r.document_date ?? '' },
     { id: 'due', header: 'Due Date', accessor: (r) => formatDate(r.due_date), sortField: (r) => r.due_date ?? '' },
@@ -108,6 +161,13 @@ const InvoiceTable: React.FC<Props> = ({ onSelect, dueFilter = false, documents:
     });
     return copy;
   }, [tableData, sortKey, sortAsc]);
+
+  const handleVendorClick = (vendorName: string, event: React.MouseEvent) => {
+    event.stopPropagation(); // Prevent row click
+    if (vendorName && vendorName.trim()) {
+      navigate(`/vendor/${encodeURIComponent(vendorName)}`);
+    }
+  };
 
   if (loading) return <p>Loading...</p>;
   if (error) return <p>Error: {error}</p>;

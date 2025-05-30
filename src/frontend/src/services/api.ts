@@ -619,6 +619,137 @@ export const settingsApi = {
     }
   },
 
+  async getLlmConfig(): Promise<Record<string, any>> {
+    try {
+      const res = await http.get('/llm/config');
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      return {};
+    }
+  },
+
+  async updateLlmConfig(data: Record<string, any>): Promise<Record<string, any>> {
+    try {
+      const formData = new FormData();
+      Object.entries(data).forEach(([k, v]) => {
+        if (v !== undefined && v !== null) {
+          formData.append(k, v as any);
+        }
+      });
+      const res = await http.put('/llm/config', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async testLlmConnection(provider: string, apiUrl?: string, apiKey?: string): Promise<Record<string, any>> {
+    try {
+      const formData = new FormData();
+      formData.append('provider', provider);
+      if (apiUrl) formData.append('api_url', apiUrl);
+      if (apiKey) formData.append('api_key', apiKey);
+      
+      const res = await http.post('/llm/test-connection', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async processDocument(documentId: number, force: boolean = false): Promise<Record<string, any>> {
+    try {
+      const res = await http.post(`/llm/process-document/${documentId}?force=${force}`);
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async suggestTags(documentId: number): Promise<Record<string, any>> {
+    try {
+      const res = await http.post(`/llm/suggest-tags/${documentId}`);
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async analyzeDocument(documentId: number): Promise<Record<string, any>> {
+    try {
+      const res = await http.post(`/llm/analyze/${documentId}`);
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async enrichField(documentId: number, fieldName: string): Promise<Record<string, any>> {
+    try {
+      const formData = new FormData();
+      formData.append('field_name', fieldName);
+      
+      const res = await http.post(`/llm/enrich-field/${documentId}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async extractTenant(documentId: number): Promise<Record<string, any>> {
+    try {
+      const res = await http.post(`/llm/extract-tenant/${documentId}`);
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async batchExtractTenants(documentIds?: number[], allDocuments: boolean = false): Promise<Record<string, any>> {
+    try {
+      const payload = allDocuments ? { all_documents: true } : { document_ids: documentIds };
+      const res = await http.post('/llm/batch-extract-tenants', payload);
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async autoAssignUnmatched(): Promise<Record<string, any>> {
+    try {
+      const res = await http.post('/llm/auto-assign-unmatched');
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  },
+
+  async getLlmStatus(): Promise<Record<string, any>> {
+    try {
+      const res = await http.get('/llm/status');
+      return res.data as Record<string, any>;
+    } catch (err) {
+      console.error(err);
+      return { enabled: false };
+    }
+  },
+
   async validateFolders(inboxPath: string, storageRoot: string): Promise<any> {
     const form = new FormData();
     form.append('inbox_path', inboxPath);
@@ -740,4 +871,412 @@ export const useHealth = () => {
     http.get<HealthResponse>('/health').then(res=> setHealth(res.data as any)).catch(()=>{});
   },[]);
   return health;
+};
+
+/* -------------------------------------------------------------------------- */
+/*                                Tenant API                                  */
+/* -------------------------------------------------------------------------- */
+
+export type Tenant = {
+  id: number;
+  name: string;
+  alias: string;
+  type: 'company' | 'individual';
+  street?: string;
+  house_number?: string;
+  apartment?: string;
+  area_code?: string;
+  county?: string;
+  country?: string;
+  iban?: string;
+  vat_id?: string;
+  is_active: boolean;
+  is_default: boolean;
+  created_at: string;
+  updated_at?: string;
+};
+
+export const tenantApi = {
+  async getAll(): Promise<Tenant[]> {
+    const res = await http.get<{ tenants: Tenant[] }>('/tenants');
+    return res.data.tenants;
+  },
+
+  async getDefault(): Promise<Tenant | null> {
+    try {
+      const res = await http.get<{ tenant: Tenant }>('/tenants/default');
+      return res.data.tenant;
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  },
+
+  async getById(id: number): Promise<Tenant> {
+    const res = await http.get<{ tenant: Tenant }>(`/tenants/${id}`);
+    return res.data.tenant;
+  },
+
+  async create(data: Partial<Tenant>): Promise<Tenant> {
+    const form = new FormData();
+    Object.entries(data).forEach(([k, v]) => {
+      if (v != null) {
+        form.append(k, String(v));
+      }
+    });
+    
+    const res = await http.post<{ tenant: Tenant }>('/tenants', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data.tenant;
+  },
+
+  async update(id: number, data: Partial<Tenant>): Promise<Tenant> {
+    const form = new FormData();
+    Object.entries(data).forEach(([k, v]) => {
+      if (v != null) {
+        form.append(k, String(v));
+      }
+    });
+    
+    const res = await http.put<{ tenant: Tenant }>(`/tenants/${id}`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data.tenant;
+  },
+
+  async delete(id: number): Promise<void> {
+    await http.delete(`/tenants/${id}`);
+  },
+
+  async setDefault(id: number): Promise<void> {
+    await http.post(`/tenants/${id}/set-default`);
+  },
+
+  async clearDefault(): Promise<void> {
+    await http.post('/tenants/clear-default');
+  },
+};
+
+export const useTenants = () => {
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [defaultTenant, setDefaultTenant] = useState<Tenant | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchTenants = async () => {
+    try {
+      setLoading(true);
+      const [tenantsData, defaultData] = await Promise.all([
+        tenantApi.getAll(),
+        tenantApi.getDefault(),
+      ]);
+      setTenants(tenantsData);
+      setDefaultTenant(defaultData);
+      setError(null);
+    } catch (e: any) {
+      setError(e.message || 'Failed to fetch tenants');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createTenant = async (data: Partial<Tenant>) => {
+    const newTenant = await tenantApi.create(data);
+    setTenants(prev => [...prev, newTenant]);
+    if (newTenant.is_default) {
+      setDefaultTenant(newTenant);
+    }
+    return newTenant;
+  };
+
+  const updateTenant = async (id: number, data: Partial<Tenant>) => {
+    const updatedTenant = await tenantApi.update(id, data);
+    setTenants(prev => prev.map(t => t.id === id ? updatedTenant : t));
+    if (updatedTenant.is_default) {
+      setDefaultTenant(updatedTenant);
+    }
+    return updatedTenant;
+  };
+
+  const deleteTenant = async (id: number) => {
+    await tenantApi.delete(id);
+    setTenants(prev => prev.filter(t => t.id !== id));
+    if (defaultTenant?.id === id) {
+      setDefaultTenant(null);
+    }
+  };
+
+  const setDefault = async (id: number | null) => {
+    if (id === null) {
+      // Clear default tenant
+      await tenantApi.clearDefault();
+      setDefaultTenant(null);
+      setTenants(prev => prev.map(t => ({ ...t, is_default: false })));
+    } else {
+      await tenantApi.setDefault(id);
+      const tenant = tenants.find(t => t.id === id);
+      if (tenant) {
+        setDefaultTenant(tenant);
+        setTenants(prev => prev.map(t => ({ ...t, is_default: t.id === id })));
+      }
+    }
+    
+    // Trigger document refresh
+    window.dispatchEvent(new Event('documentsRefresh'));
+  };
+
+  useEffect(() => {
+    fetchTenants();
+  }, []);
+
+  return {
+    tenants,
+    defaultTenant,
+    loading,
+    error,
+    refresh: fetchTenants,
+    createTenant,
+    updateTenant,
+    deleteTenant,
+    setDefault,
+  };
+};
+
+// Cleanup vendor tenants that were incorrectly created
+export const cleanupVendorTenants = async (): Promise<any> => {
+  try {
+    const response = await fetch('/api/tenants/cleanup-vendors', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${btoa('admin:admin')}`
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Error cleaning up vendor tenants:', error);
+    throw error;
+  }
+};
+
+// Processing Status API
+export const processingApi = {
+  async getStatus(): Promise<any> {
+    try {
+      const res = await http.get('/processing/status');
+      return res.data;
+    } catch (err) {
+      console.error('Error fetching processing status:', err);
+      return {
+        processing: { count: 0, documents: [] },
+        recent_failed: { count: 0, documents: [] },
+        recent_success: { count: 0, documents: [] },
+        watcher_active: false,
+        stats: { recent_activity_count: 0, processing_count: 0, failed_count: 0 }
+      };
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Processing Rules API
+// ---------------------------------------------------------------------------
+
+export type ProcessingRule = {
+  id: number;
+  name: string;
+  description?: string;
+  vendor?: string;
+  preferred_tenant_id?: number;
+  conditions: Array<{
+    field: string;
+    operator: string;
+    value: string;
+  }>;
+  actions: Array<{
+    type: string;
+    value: string;
+  }>;
+  priority: number;
+  enabled: boolean;
+  matches_count: number;
+  last_matched_at?: string;
+  created_at: string;
+  updated_at?: string;
+};
+
+export const processingRulesApi = {
+  async getAll(): Promise<ProcessingRule[]> {
+    try {
+      const res = await http.get('/processing/rules');
+      return (res.data as any)?.rules || [];
+    } catch (err) {
+      console.error('Error fetching processing rules:', err);
+      return [];
+    }
+  },
+
+  async getById(id: number): Promise<ProcessingRule | null> {
+    try {
+      const res = await http.get(`/processing/rules/${id}`);
+      return (res.data as any)?.rule || null;
+    } catch (err) {
+      console.error(`Error fetching processing rule ${id}:`, err);
+      return null;
+    }
+  },
+
+  async create(data: Partial<ProcessingRule>): Promise<ProcessingRule | null> {
+    try {
+      const formData = new FormData();
+      
+      if (data.name) formData.append('name', data.name);
+      if (data.description) formData.append('description', data.description);
+      if (data.vendor) formData.append('vendor', data.vendor);
+      if (data.preferred_tenant_id) formData.append('preferred_tenant_id', data.preferred_tenant_id.toString());
+      if (data.conditions) formData.append('conditions', JSON.stringify(data.conditions));
+      if (data.actions) formData.append('actions', JSON.stringify(data.actions));
+      if (data.priority !== undefined) formData.append('priority', data.priority.toString());
+      if (data.enabled !== undefined) formData.append('enabled', data.enabled.toString());
+
+      const res = await http.post('/processing/rules', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return (res.data as any)?.rule || null;
+    } catch (err) {
+      console.error('Error creating processing rule:', err);
+      return null;
+    }
+  },
+
+  async update(id: number, data: Partial<ProcessingRule>): Promise<ProcessingRule | null> {
+    try {
+      const formData = new FormData();
+      
+      if (data.name !== undefined) formData.append('name', data.name);
+      if (data.description !== undefined) formData.append('description', data.description || '');
+      if (data.vendor !== undefined) formData.append('vendor', data.vendor || '');
+      if (data.preferred_tenant_id !== undefined) formData.append('preferred_tenant_id', data.preferred_tenant_id?.toString() || '');
+      if (data.conditions !== undefined) formData.append('conditions', JSON.stringify(data.conditions));
+      if (data.actions !== undefined) formData.append('actions', JSON.stringify(data.actions));
+      if (data.priority !== undefined) formData.append('priority', data.priority.toString());
+      if (data.enabled !== undefined) formData.append('enabled', data.enabled.toString());
+
+      const res = await http.put(`/processing/rules/${id}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return (res.data as any)?.rule || null;
+    } catch (err) {
+      console.error(`Error updating processing rule ${id}:`, err);
+      return null;
+    }
+  },
+
+  async delete(id: number): Promise<boolean> {
+    try {
+      await http.delete(`/processing/rules/${id}`);
+      return true;
+    } catch (err) {
+      console.error(`Error deleting processing rule ${id}:`, err);
+      return false;
+    }
+  },
+
+  async test(ruleId: number, documentId: number): Promise<any> {
+    try {
+      const formData = new FormData();
+      formData.append('document_id', documentId.toString());
+
+      const res = await http.post(`/processing/rules/${ruleId}/test`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return res.data;
+    } catch (err) {
+      console.error(`Error testing processing rule ${ruleId}:`, err);
+      return { status: 'error', matches: false };
+    }
+  },
+
+  async processDocument(documentId: number): Promise<any> {
+    try {
+      const formData = new FormData();
+      formData.append('document_id', documentId.toString());
+
+      const res = await http.post('/processing/rules/process-document', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return res.data;
+    } catch (err) {
+      console.error(`Error processing document ${documentId} with rules:`, err);
+      return { status: 'error', result: null };
+    }
+  }
+};
+
+export const useProcessingRules = () => {
+  const [rules, setRules] = useState<ProcessingRule[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchRules = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await processingRulesApi.getAll();
+      setRules(data);
+    } catch (err) {
+      setError('Failed to fetch processing rules');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createRule = async (data: Partial<ProcessingRule>) => {
+    const rule = await processingRulesApi.create(data);
+    if (rule) {
+      setRules(prev => [...prev, rule]);
+      return rule;
+    }
+    return null;
+  };
+
+  const updateRule = async (id: number, data: Partial<ProcessingRule>) => {
+    const rule = await processingRulesApi.update(id, data);
+    if (rule) {
+      setRules(prev => prev.map(r => r.id === id ? rule : r));
+      return rule;
+    }
+    return null;
+  };
+
+  const deleteRule = async (id: number) => {
+    const success = await processingRulesApi.delete(id);
+    if (success) {
+      setRules(prev => prev.filter(r => r.id !== id));
+    }
+    return success;
+  };
+
+  useEffect(() => {
+    fetchRules();
+  }, []);
+
+  return {
+    rules,
+    loading,
+    error,
+    fetchRules,
+    createRule,
+    updateRule,
+    deleteRule,
+  };
 }; 

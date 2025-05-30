@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import ChangePasswordModal from '../auth/ChangePasswordModal';
 import HealthStatus from './HealthStatus';
-import EntitySwitcher from './EntitySwitcher';
+import TenantSwitcher from './EntitySwitcher';
 
 interface NavbarProps {
   collapsed: boolean;
@@ -52,7 +52,7 @@ const Navbar: React.FC<NavbarProps> = ({ collapsed, toggleSidebar }) => {
         </div>
         
         <div className="flex-1 px-4 md:px-0 flex items-center gap-6">
-          <EntitySwitcher />
+          <TenantSwitcher />
           <div className="relative max-w-md flex-1">
             <div className="absolute inset-y-0 left-0 flex items-center pl-3">
               <Search size={18} className="text-secondary-400" />
@@ -62,6 +62,11 @@ const Navbar: React.FC<NavbarProps> = ({ collapsed, toggleSidebar }) => {
               placeholder="Search documents..."
               className="form-input pl-10"
             />
+          </div>
+          <div className="hidden md:flex items-center">
+            <span className="text-xs text-secondary-500 bg-secondary-100 dark:bg-secondary-800 px-2 py-1 rounded-md font-mono">
+              v0.92.0
+            </span>
           </div>
           <HealthStatus />
         </div>

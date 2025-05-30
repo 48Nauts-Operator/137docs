@@ -1,0 +1,141 @@
+{
+    "nodes": [
+      {
+        "parameters": {
+          "resource": "message",
+          "operation": "getAll",
+          "additionalFields": {
+            "includeAttachments": true
+          }
+        },
+        "name": "Gmail - Get Emails",
+        "type": "n8n-nodes-base.gmail",
+        "typeVersion": 1,
+        "position": [100, 100],
+        "credentials": {
+          "gmailOAuth2": "Gmail Account"
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{Object.keys($json.payload.parts || {}).length > 0}}"
+              }
+            ]
+          }
+        },
+        "name": "Check for Attachments",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [300, 100]
+      },
+      {
+        "parameters": {
+          "resource": "messageAttachment",
+          "operation": "get",
+          "messageId": "={{$json.id}}",
+          "attachmentId": "={{$json.payload.parts[0].body.attachmentId}}"
+        },
+        "name": "Download Attachment",
+        "type": "n8n-nodes-base.gmail",
+        "typeVersion": 1,
+        "position": [500, 100],
+        "credentials": {
+          "gmailOAuth2": "Gmail Account"
+        }
+      },
+      {
+        "parameters": {
+          "options": {}
+        },
+        "name": "Move Binary",
+        "type": "n8n-nodes-base.moveBinaryData",
+        "typeVersion": 1,
+        "position": [700, 100]
+      },
+      {
+        "parameters": {
+          "filePath": "/data/emails/{{ $binary.data.fileName }}",
+          "dataPropertyName": "data"
+        },
+        "name": "Store Attachment",
+        "type": "n8n-nodes-base.writeBinaryFile",
+        "typeVersion": 1,
+        "position": [900, 100]
+      },
+      {
+        "parameters": {
+          "resource": "message",
+          "operation": "post",
+          "channel": "#your-channel",
+          "text": "📩 New email with attachment has been saved."
+        },
+        "name": "Send Slack Message",
+        "type": "n8n-nodes-base.slack",
+        "typeVersion": 1,
+        "position": [1100, 100],
+        "credentials": {
+          "slackApi": "Slack Account"
+        }
+      }
+    ],
+    "connections": {
+      "Gmail - Get Emails": {
+        "main": [
+          [
+            {
+              "node": "Check for Attachments",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check for Attachments": {
+        "main": [
+          [
+            {
+              "node": "Download Attachment",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Download Attachment": {
+        "main": [
+          [
+            {
+              "node": "Move Binary",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Move Binary": {
+        "main": [
+          [
+            {
+              "node": "Store Attachment",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Store Attachment": {
+        "main": [
+          [
+            {
+              "node": "Send Slack Message",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }

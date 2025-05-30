@@ -27,7 +27,14 @@ export const useOnboardingStatus = () => {
     http
       .get('/users')
       .then((res) => setHasUser((res.data as any[]).length > 0))
-      .catch(() => setHasUser(false));
+      .catch((err) => {
+        // If we get a 403, it means we're not admin but users exist
+        if (err.response?.status === 403) {
+          setHasUser(true);
+        } else {
+          setHasUser(false);
+        }
+      });
   }, []);
 
   return { loading, accepted, accept, hasUser };

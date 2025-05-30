@@ -12,7 +12,7 @@ import sqlalchemy as sa
 revision = '2025_05_22_add_settings_table'
 # Make sure this matches the latest existing revision in the directory
 # (we depend on the vectors table migration dated 24 May).
-down_revision = '2025_05_24_add_vectors_table'
+down_revision = '2025_05_22_expand_address_book'
 branch_labels = None
 depends_on = None
 

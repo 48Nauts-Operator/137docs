@@ -1,10 +1,10 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import InvoiceTable from '../components/invoices/InvoiceTable';
-import { useDocuments } from '../services/api';
+import { useDocuments, useTenants } from '../services/api';
 import { useSearchParams } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuCheckboxItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu';
-import { SlidersHorizontal } from 'lucide-react';
+import { SlidersHorizontal, Building2, User } from 'lucide-react';
 
 const InvoicesPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -12,6 +12,9 @@ const InvoicesPage: React.FC = () => {
 
   // Fetch only invoices
   const { documents } = useDocuments({ document_type: 'invoice' });
+
+  // Get tenants for filtering indicator
+  const { defaultTenant } = useTenants();
 
   // Quick view state
   const [quarterView, setQuarterView] = useState<number | null>(null); // 1-4 or null
@@ -28,7 +31,7 @@ const InvoicesPage: React.FC = () => {
 
   useEffect(()=>{ localStorage.setItem(STORAGE_KEY_COLS, JSON.stringify(hiddenCols)); }, [hiddenCols]);
 
-  const allColIds = ['select','date','invoice_date','vendor','invoice','due','duein','currency','amount','vat','settled_pct','open_payment','paid','tags','category','status'];
+  const allColIds = ['select','date','invoice_date','vendor','tenant','invoice','due','duein','currency','amount','vat','settled_pct','open_payment','paid','tags','category','status'];
 
   const toggleCol = (id:string)=>{
     setHiddenCols(prev=> prev.includes(id)? prev.filter(c=>c!==id): [...prev,id]);
@@ -138,6 +141,21 @@ const InvoicesPage: React.FC = () => {
             All
           </button>
         </div>
+        
+        {/* Tenant Filter Indicator */}
+        {defaultTenant && (
+          <div className="flex items-center space-x-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 rounded-md border border-blue-200 dark:border-blue-800">
+            {defaultTenant.type === 'company' ? (
+              <Building2 className="w-4 h-4 text-blue-500" />
+            ) : (
+              <User className="w-4 h-4 text-green-500" />
+            )}
+            <span className="text-sm text-blue-700 dark:text-blue-300">
+              Showing: {defaultTenant.alias}
+            </span>
+          </div>
+        )}
+        
         <div className="flex items-center space-x-2 ml-4">
           {['all','paid','unpaid'].map(st=> (
             <button key={st} className={`px-3 py-1 rounded-md text-sm font-medium ${statusFilter===st ? 'bg-primary-600 text-white' : 'hover:bg-secondary-100 dark:hover:bg-secondary-700'}`} onClick={()=>setStatusFilter(st as any)}>

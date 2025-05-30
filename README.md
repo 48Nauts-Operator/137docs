@@ -1,19 +1,35 @@
-# 137Docs – Intelligent Document Management System
+# 137Docs – AI-Powered Document Management System
 
-137Docs is a full-stack, AI-powered document management system built for small teams and freelancers that need **OCR**, **semantic search**, **analytics**, and **calendar-driven reminders** without the enterprise price tag.
+**Version 0.90** - *LLM Integration Phase 1 Complete*
+
+137Docs is a full-stack, AI-powered document management system built for small teams and freelancers that need **OCR**, **semantic search**, **AI document processing**, **analytics**, and **calendar-driven reminders** without the enterprise price tag.
 
 ---
 
 ## ✨ Key Features
 
-* **Drag-&-drop inbox** – drop PDFs or images into `data/inbox/` or upload through the UI; they are auto-indexed via OCR and an LLM metadata extractor.
+### 🤖 AI-Powered Document Processing
+* **Multi-Provider LLM Support** – Ollama (local), OpenAI, Anthropic, LiteLLM, and custom APIs
+* **Automated Metadata Extraction** – AI extracts titles, dates, amounts, and document types
+* **Intelligent Tagging** – Automatic tag suggestions and application
+* **Document Analysis** – AI-powered summaries, key points, entities, and sentiment analysis
+* **Privacy-First Option** – Local processing with Ollama keeps sensitive data on-premises
+
+### 📄 Document Management
+* **Drag-&-drop inbox** – drop PDFs or images into `data/inbox/` or upload through the UI; they are auto-indexed via OCR and AI metadata extraction.
 * **Powerful search** – combine full-text, faceted, and semantic search to locate any document in seconds.
 * **Invoice intelligence** – due-date detection, currency normalisation, recurring-invoice grouping, payment-status tracking.
+
+### 📅 Organization & Workflow
 * **Calendar integration** – colour-coded events in the UI plus a personal ICS feed that you can subscribe to from Google / Apple Calendar.
 * **Address book** – central contact store shared between documents and invoices.
 * **Notification centre** – email / in-app reminders before invoices become overdue.
 * **Analytics dashboard** – document-type distribution, monthly invoice totals, payment-status breakdown.
+
+### 🎨 User Experience
 * **Dark-mode first** – Tailwind & Radix-UI powered interface with a focus on accessibility.
+* **Real-time AI processing** – Live status indicators and progress feedback
+* **Comprehensive settings** – Fine-tune AI behavior, performance, and privacy preferences
 
 ---
 
@@ -21,10 +37,11 @@
 
 | Layer          | Tech                                                     | Purpose |
 | -------------- | -------------------------------------------------------- | ------- |
-| Frontend (SPA) | React 18 + React-Router + TailwindCSS + Radix UI        | User interface, data-table views, calendar, analytics visuals |
-| API            | FastAPI, Uvicorn, SQLAlchemy Async                      | REST CRUD, authentication, notifications, calendar export |
-| AI Services    | Tesseract / EasyOCR, Ollama (LLM), LangChain            | OCR & metadata extraction |
-| Database       | SQLite (dev) / PostgreSQL (prod)                        | Persistent storage |
+| Frontend (SPA) | React 18 + React-Router + TailwindCSS + Radix UI        | User interface, AI controls, data-table views, calendar, analytics visuals |
+| API            | FastAPI, Uvicorn, SQLAlchemy Async                      | REST CRUD, authentication, notifications, calendar export, LLM integration |
+| AI Services    | Tesseract / EasyOCR, Multi-LLM (Ollama, OpenAI, etc.)  | OCR, metadata extraction, document analysis, intelligent tagging |
+| Database       | PostgreSQL + pgvector                                   | Persistent storage, vector embeddings, LLM configuration |
+| Vector Store   | Qdrant                                                   | Semantic search, document embeddings |
 | DevOps         | Docker Compose, GitHub Actions (CI suggested)           | Consistent local & CI environments |
 
 See `docs/137docs_architecture.md` for a deep dive.

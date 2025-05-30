@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useDocuments, documentApi } from '../../services/api';
+import { useDocuments, documentApi, useTenants } from '../../services/api';
 import { 
   FileText, 
   FileCheck, 
@@ -9,7 +9,9 @@ import {
   SortDesc,
   Loader,
   MoreVertical,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Building2,
+  User
 } from 'lucide-react';
 import DataTable, { Column } from '../common/DataTable';
 import StatusBadge from '../common/StatusBadge';
@@ -49,6 +51,9 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
     status: filterStatus,
     search: searchQuery
   });
+
+  // Get tenants for recipient display
+  const { tenants, defaultTenant, setDefault } = useTenants();
 
   // Handle document selection
   const handleSelectDocument = (document: any) => {
@@ -134,15 +139,76 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
   type YearSegment = typeof yearOptions[number];
   const [yearSegment, setYearSegment] = useState<YearSegment>(nowYear);
 
+  // Helper function to parse dates in multiple formats
+  const parseDate = (dateStr: string): Date | null => {
+    if (!dateStr) return null;
+    
+    // Try ISO format first (2024-08-29)
+    let date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
+    
+    // Try European format (30.10.2024)
+    const europeanMatch = dateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (europeanMatch) {
+      const [, day, month, year] = europeanMatch;
+      date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+      if (!isNaN(date.getTime())) {
+        return date;
+      }
+    }
+    
+    return null;
+  };
+
   const filteredDocs = documents.filter((doc: any) => {
     const dateStr = doc.due_date || doc.document_date || doc.created_at;
-    if (!dateStr) return false;
-    const year = new Date(dateStr).getFullYear();
-
-    if (yearSegment === 'Archive') {
-      return year < nowYear - 2;
+    
+    // Apply year filtering (but don't hide docs without dates)
+    let yearMatch = true; // Default to showing documents
+    if (dateStr) {
+      const parsedDate = parseDate(dateStr);
+      if (parsedDate) {
+        const year = parsedDate.getFullYear();
+        if (yearSegment === 'Archive') {
+          yearMatch = year < nowYear - 2;
+        } else {
+          yearMatch = year === yearSegment;
+        }
+      } else {
+        // If date parsing fails, show in current year (not archive)
+        yearMatch = yearSegment !== 'Archive';
+      }
+    } else {
+      // Documents without dates: show them in current year view, hide in archive
+      yearMatch = yearSegment !== 'Archive';
     }
-    return year === yearSegment;
+
+    // Apply tenant filtering based on current default tenant
+    let tenantMatch = true;
+    if (defaultTenant) {
+      // Only show documents that belong to the current default tenant
+      tenantMatch = doc.recipient === defaultTenant.alias;
+    }
+    // If no default tenant is set, show all documents (no filtering)
+
+    // Check other potential filters (status, search)
+    let statusMatch = true;
+    if (filterStatus) {
+      statusMatch = doc.status === filterStatus;
+    }
+    
+    let searchMatch = true;
+    if (searchQuery && searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim();
+      searchMatch = [doc.title, doc.sender, doc.recipient, doc.status]
+        .some(field => field && field.toLowerCase().includes(query));
+    }
+
+    const finalMatch = yearMatch && tenantMatch && statusMatch && searchMatch;
+
+    return finalMatch;
   });
 
   const sortedDocuments = [...filteredDocs].sort((a, b) => {
@@ -155,12 +221,32 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
     return 0;
   });
 
+  // Debug information
+  console.log(`[DEBUG] Documents: ${documents.length} total → ${filteredDocs.length} after filtering → ${sortedDocuments.length} final`);
+  console.log(`[DEBUG] Year segment: ${yearSegment}, Default tenant: ${defaultTenant?.alias || 'None'}`);
+  if (!defaultTenant) {
+    console.log('[DEBUG] Showing ALL documents (no tenant filter)');
+  }
+
+  // Add visible debug info in UI when in All Documents mode
+  const showDebugInfo = false; // Disabled - issue resolved
+
   // Listen to external refresh events
   useEffect(() => {
-    const refresh = () => setSearchQuery((q) => q + ' ');
+    const refresh = () => {
+      console.log('[DEBUG] Documents refresh event triggered');
+      setSearchQuery((q) => q + ' ');
+    };
     window.addEventListener('documentsRefresh', refresh);
     return () => window.removeEventListener('documentsRefresh', refresh);
   }, []);
+
+  // Also listen for defaultTenant changes to trigger refresh
+  useEffect(() => {
+    console.log('[DEBUG] Default tenant changed:', defaultTenant);
+    // Force a small state update to trigger re-render
+    setSearchQuery((q) => q.trim());
+  }, [defaultTenant]);
 
   const toggleCol = (id: string) => {
     setHiddenCols((prev) =>
@@ -239,6 +325,38 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
       accessor: 'sender',
     },
     {
+      id: 'tenant',
+      header: (
+        <div className="flex items-center cursor-pointer" onClick={() => handleSort('recipient')}>
+          Tenant
+          {sortField === 'recipient' && (sortDirection === 'asc' ? <SortAsc size={14} className="ml-1" /> : <SortDesc size={14} className="ml-1" />)}
+        </div>
+      ),
+      accessor: (row: any) => {
+        const matchingTenant = tenants.find(t => t.alias === row.recipient);
+        if (matchingTenant) {
+          return (
+            <div className="flex items-center space-x-1">
+              {matchingTenant.type === 'company' ? (
+                <Building2 size={14} className="text-blue-500" />
+              ) : (
+                <User size={14} className="text-green-500" />
+              )}
+              <span className="text-sm">{matchingTenant.alias}</span>
+            </div>
+          );
+        } else {
+          return (
+            <div className="flex items-center space-x-1">
+              <User size={14} className="text-secondary-500" />
+              <span className="text-sm text-secondary-500">{row.recipient || '-'}</span>
+            </div>
+          );
+        }
+      },
+      width: '120px',
+    },
+    {
       id: 'title',
       header: (
         <div className="flex items-center cursor-pointer" onClick={() => handleSort('title')}>
@@ -274,6 +392,49 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
           ))}
         </div>
 
+        {/* Tenant Filter Indicator */}
+        {defaultTenant ? (
+          <div className="flex items-center space-x-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 rounded-md border border-blue-200 dark:border-blue-800">
+            {defaultTenant.type === 'company' ? (
+              <Building2 className="w-4 h-4 text-blue-500" />
+            ) : (
+              <User className="w-4 h-4 text-green-500" />
+            )}
+            <span className="text-sm text-blue-700 dark:text-blue-300">
+              Showing: {defaultTenant.alias}
+            </span>
+            <span className="text-xs text-blue-600 dark:text-blue-400">
+              (Use dropdown in top nav to show "All Documents")
+            </span>
+            <Button 
+              size="sm" 
+              variant="outline" 
+              onClick={async () => {
+                try {
+                  await setDefault(null);
+                } catch (error) {
+                  console.error('Failed to clear tenant filter:', error);
+                }
+              }}
+              className="ml-2 text-xs"
+            >
+              Show All
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center space-x-2 px-3 py-2 bg-green-50 dark:bg-green-900/20 rounded-md border border-green-200 dark:border-green-800">
+            <div className="w-4 h-4 flex items-center justify-center">
+              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+            </div>
+            <span className="text-sm text-green-700 dark:text-green-300">
+              Showing: All Documents
+            </span>
+            <span className="text-xs text-green-600 dark:text-green-400">
+              (Use dropdown in top nav to filter by tenant)
+            </span>
+          </div>
+        )}
+
         {/* Column selector */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -282,7 +443,7 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">
-            {['select','type','id','created','due','invoice_date','vendor','title','currency','amount','vat','tags','status'].map(id=> (
+            {['select','type','id','created','due','invoice_date','vendor','tenant','title','currency','amount','vat','tags','status'].map(id=> (
               <DropdownMenuCheckboxItem
                 key={id}
                 checked={!hiddenCols.includes(id)}
@@ -341,6 +502,24 @@ const DocumentListIntegrated: React.FC<DocumentListProps> = ({ onSelectDocument 
           </div>
         )}
       </div>
+
+      {/* Debug Information Panel */}
+      {showDebugInfo && (
+        <div className="mb-4 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+          <h4 className="text-sm font-semibold text-yellow-800 dark:text-yellow-200 mb-2">
+            🔍 Debug Info: Documents Being Filtered
+          </h4>
+          <div className="text-xs text-yellow-700 dark:text-yellow-300 space-y-1">
+            <div>📊 <strong>Total loaded:</strong> {documents.length} documents</div>
+            <div>✅ <strong>After filtering:</strong> {filteredDocs.length} documents</div>
+            <div>❌ <strong>Hidden:</strong> {documents.length - filteredDocs.length} documents</div>
+            <div>📅 <strong>Year filter:</strong> {yearSegment}</div>
+            <div>🏢 <strong>Tenant filter:</strong> {defaultTenant?.alias || 'All Documents'}</div>
+            <div>📝 <strong>Status filter:</strong> {filterStatus || 'None'}</div>
+            <div>🔍 <strong>Search:</strong> {searchQuery ? `"${searchQuery}"` : 'None'}</div>
+          </div>
+        </div>
+      )}
 
       {/* Loading state */}
       {loading && (

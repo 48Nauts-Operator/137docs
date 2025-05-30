@@ -44,9 +44,17 @@ class Settings(BaseSettings):
     # Host filesystem mount root inside the container – used by the file-browser API
     HOSTFS_ROOT: str = os.getenv("HOSTFS_ROOT", "/hostfs")
     
+    # Additional fields that might be passed from environment/config
+    hostfs_mount: str | None = None
+    archive_folder: str | None = None
+    ollama_base_url: str | None = None
+    litellm_url: str | None = None
+    litellm_api: str | None = None
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"  # Allow extra fields to be ignored
 
 # Create settings instance
 settings = Settings()

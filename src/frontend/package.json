@@ -1,6 +1,6 @@
 {
   "name": "document-management-system",
-  "version": "0.1.0",
+  "version": "0.92.0",
   "private": true,
   "dependencies": {
     "@fullcalendar/core": "^6.1.17",

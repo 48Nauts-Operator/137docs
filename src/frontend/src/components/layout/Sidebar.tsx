@@ -17,6 +17,8 @@ import {
   Inbox,
   Store,
   PieChart,
+  Activity,
+  Zap,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -41,6 +43,10 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, toggleSidebar }) => {
     { path: '/invoices', icon: <FileCheck size={20} />, label: 'Invoices', type: 'link' },
     { path: '/documents-all', icon: <FileText size={20} />, label: 'DocAI', type: 'link' },
     { path: '/address-book', icon: <Book size={20} />, label: 'Address Book', type: 'link' },
+
+    { label: 'Processing', type: 'header' },
+    { path: '/processing-activity', icon: <Activity size={20} />, label: 'Activities', type: 'link' },
+    { path: '/processing-rules', icon: <Zap size={20} />, label: 'Process Rules', type: 'link' },
 
     { label: 'Insights', type: 'header' },
     { path: '/analytics', icon: <BarChart2 size={20} />, label: 'Analytics', type: 'link' },
@@ -136,7 +142,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, toggleSidebar }) => {
           className="absolute bottom-0 inset-x-0 px-3 py-3 text-xs text-secondary-500 dark:text-secondary-400 hover:bg-secondary-100 dark:hover:bg-secondary-800 flex items-center justify-center"
         >
           <History size={16} className="mr-1" />
-          {!collapsed && <span>v0.09</span>}
+          {!collapsed && <span>v0.90</span>}
         </Link>
       </nav>
     </aside>

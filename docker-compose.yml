@@ -13,7 +13,8 @@ services:
     depends_on:
       - backend
     environment:
-      - REACT_APP_API_URL=http://localhost:8808/api
+      # Use host IP for network access - will be set via .env
+      - REACT_APP_API_URL=${FRONTEND_API_URL:-http://localhost:8808/api}
 
   backend:
     build:
@@ -61,7 +62,7 @@ services:
       POSTGRES_PASSWORD: postgres
     # No host binding -> avoids port conflicts; access Postgres via docker network only
     # ports:
-    #   - "5433:5432"
+    #   - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 

@@ -1,5 +1,6 @@
 ---
-description:
-globs:
+description: 
+globs: 
 alwaysApply: false
 ---
+- Dont make any changes on the existing databases, API or any other productive process without clear instructions and a GO from me

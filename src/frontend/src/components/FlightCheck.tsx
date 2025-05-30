@@ -50,7 +50,7 @@ interface FlightCheckResults {
   user?: {
     id: number;
     username: string;
-    is_admin: boolean;
+    role: string;
   };
 }
 
@@ -396,7 +396,7 @@ const FlightCheck: React.FC = () => {
               {results.user && (
                 <div className="mt-4 p-3 bg-gray-50 dark:bg-gray-800 rounded text-sm">
                   <strong>User:</strong> {results.user.username} • 
-                  <strong>Admin:</strong> {results.user.is_admin ? 'Yes' : 'No'}
+                  <strong>Role:</strong> {results.user.role}
                 </div>
               )}
             </CardContent>

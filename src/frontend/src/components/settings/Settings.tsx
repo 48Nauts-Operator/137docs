@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Lock, Mail, Shield, Bell, Moon, Sun, Globe, Database, Save, Brain, Building2, Bot, Play, RefreshCw, CheckCircle, AlertCircle, Clock, Info } from 'lucide-react';
+import { User, Lock, Mail, Shield, Bell, Moon, Sun, Globe, Database, Save, Brain, Building2, Bot, Play, RefreshCw, CheckCircle, AlertCircle, Clock, Info, Activity } from 'lucide-react';
 import { settingsApi } from '../../services/api';
 import DirectorySelect from '../common/DirectorySelect';
 import FileBrowser from '../common/FileBrowser';
@@ -7,6 +7,7 @@ import LLMConfigSection from './LLMConfigSection';
 import TenantManagement from './TenantManagement';
 import VersionHistory from '../VersionHistory';
 import ProgressModal from '../common/ProgressModal';
+import FlightCheck from '../FlightCheck';
 
 const Settings: React.FC = () => {
   const [activeTab, setActiveTab] = useState('account');
@@ -360,9 +361,20 @@ const Settings: React.FC = () => {
             <Info size={16} className="inline mr-1" />
             Version
           </button>
+          <button
+            className={`px-4 py-3 text-sm font-medium ${
+              activeTab === 'flight'
+                ? 'border-b-2 border-primary-500 text-primary-600 dark:text-primary-400'
+                : 'text-secondary-600 hover:text-secondary-800 dark:text-secondary-400 dark:hover:text-secondary-200'
+            }`}
+            onClick={() => setActiveTab('flight')}
+          >
+            <Activity size={16} className="inline mr-1" />
+            Flight Check
+          </button>
 
           {/* Save icon button - only show for form-based tabs */}
-          {activeTab !== 'llm' && activeTab !== 'tenants' && activeTab !== 'automation' && activeTab !== 'version' && (
+          {activeTab !== 'llm' && activeTab !== 'tenants' && activeTab !== 'automation' && activeTab !== 'version' && activeTab !== 'flight' && (
             <button
               type="button"
               onClick={handleSubmit as any}
@@ -540,8 +552,13 @@ const Settings: React.FC = () => {
             <VersionHistory />
           )}
 
+          {/* Flight Check - Use dedicated component */}
+          {activeTab === 'flight' && (
+            <FlightCheck />
+          )}
+
           {/* Other tabs use form */}
-          {activeTab !== 'llm' && activeTab !== 'tenants' && activeTab !== 'automation' && activeTab !== 'version' && (
+          {activeTab !== 'llm' && activeTab !== 'tenants' && activeTab !== 'automation' && activeTab !== 'version' && activeTab !== 'flight' && (
             <form onSubmit={handleSubmit}>
               {/* Account Settings */}
               {activeTab === 'account' && (

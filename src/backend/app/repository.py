@@ -295,6 +295,11 @@ class UserRepository:  # noqa: D101 – simple data-access class
         user = res.scalars().first()
         return self._to_dict(user) if user else None
 
+    async def get_by_username(self, db: AsyncSession, username: str) -> Optional[UserDB]:
+        """Get user by username - returns the actual model for authentication purposes."""
+        res = await db.execute(sa_select(UserDB).where(UserDB.username == username))
+        return res.scalars().first()
+
     async def create(self, db: AsyncSession, **data) -> dict:
         user = UserDB(**data)
         db.add(user)

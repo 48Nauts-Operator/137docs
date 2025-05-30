@@ -66,6 +66,9 @@ app.add_middleware(
 from app.api.llm import router as llm_router
 app.include_router(llm_router, prefix="/api/llm", tags=["llm"])
 
+from app.api.endpoints.flight_check import router as flight_check_router
+app.include_router(flight_check_router, prefix="/api/flight-check", tags=["diagnostics"])
+
 # Initialize services
 document_repository = DocumentRepository()
 ocr_processor = OCRProcessor()

@@ -19,6 +19,7 @@ passlib[bcrypt]==1.7.4
 bcrypt==3.2.2
 ics==0.7.2
 json5==0.9.14
+psutil==5.9.5
 
 # Postgres & vector support
 asyncpg==0.29.0

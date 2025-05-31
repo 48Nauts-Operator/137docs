@@ -81,3 +81,14 @@ with open(index_path, "w") as index_file:
     index_file.write("\n".join(index_entries))
 
 print(f"📘 Index created at: {index_path}")
+
+# === Bonus: Ensure index.md exists with default content if empty ===
+if not index_entries:
+    with open(index_path, "w") as f:
+        f.write("""# 📘 Welcome to the Claude Docs
+
+This site hosts automatically generated documentation.
+
+Please check back later when documentation has been created.
+""")
+    print("📄 Placeholder index.md created.")

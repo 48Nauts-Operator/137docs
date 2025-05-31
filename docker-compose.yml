@@ -20,8 +20,6 @@ services:
     build:
       context: ./src/backend
       dockerfile: Dockerfile
-    env_file:
-      - .env
     ports:
       - "8808:8000"
     volumes:
@@ -31,9 +29,9 @@ services:
       - ${HOSTFS_MOUNT:-./data}:/hostfs
     environment:
       - HOSTFS_ROOT=/hostfs
-      # FolderWatcher watches /hostfs/Inbox by default; override via env if desired
-      - WATCH_FOLDER=/hostfs/Inbox
-      - ARCHIVE_FOLDER=/hostfs/Archive
+      # FolderWatcher watches /hostfs/inbox by default; override via env if desired
+      - WATCH_FOLDER=/hostfs/inbox
+      - ARCHIVE_FOLDER=/hostfs/archive
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/137docs
       # Point to local Ollama (default) – override via `export OLLAMA_BASE_URL=...`
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}

@@ -117,13 +117,35 @@ const FlightCheck: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error(`Check failed: ${response.statusText}`);
+        // Try to get error message from response
+        let errorMessage = `Check failed: ${response.status} ${response.statusText}`;
+        try {
+          const errorText = await response.text();
+          if (errorText.trim().startsWith('{')) {
+            const errorData = JSON.parse(errorText);
+            errorMessage = errorData.detail || errorMessage;
+          } else if (errorText.includes('DOCTYPE')) {
+            errorMessage = 'Backend API not accessible. Please check if the backend is running on port 8808.';
+          }
+        } catch {
+          // Keep the default error message
+        }
+        throw new Error(errorMessage);
+      }
+
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Backend returned invalid response format. Expected JSON but got HTML. Please check backend configuration.');
       }
 
       const data = await response.json();
       setResults(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Flight check failed');
+      if (err instanceof SyntaxError && err.message.includes('JSON')) {
+        setError('Backend returned invalid JSON response. This usually indicates the backend API is not properly configured or accessible.');
+      } else {
+        setError(err instanceof Error ? err.message : 'Flight check failed');
+      }
     } finally {
       setLoading(false);
     }

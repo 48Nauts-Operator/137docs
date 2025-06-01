@@ -1,8 +1,8 @@
-site_name: 137docs 
+site_name: 137docs
 theme:
   name: material
   palette:
-    - scheme: slate  # enables dark mode
+    - scheme: slate
       primary: blue
       accent: green
       toggle:
@@ -60,5 +60,5 @@ plugins:
 
 nav:
   - Home: index.md
-
   - AI Docs:
+      - Placeholder: placeholder.md

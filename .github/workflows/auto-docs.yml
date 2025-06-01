@@ -1,0 +1,29 @@
+name: Auto-Deploy Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'               # Only trigger on changes to docs/
+  workflow_dispatch:           # Manual trigger
+  schedule:
+    - cron: '0 */4 * * *'       # Every 4 hours
+
+jobs:
+  deploy-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install MkDocs dependencies
+        run: pip install -r requirements.txt
+
+      - name: Deploy with MkDocs
+        run: mkdocs gh-deploy --force
